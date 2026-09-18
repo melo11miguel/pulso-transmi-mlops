@@ -55,9 +55,10 @@ def validate_observations(rows: list[dict], known_stations: set[str]) -> list[di
         if key in seen:
             raise DataQualityError(f"duplicado en el lote: {station} {ts.isoformat()}")
         seen.add(key)
-        clean.append(
-            {"station_id": station, "observed_at": ts.isoformat(), "demand": int(demand)}
-        )
+        item = {"station_id": station, "observed_at": ts.isoformat(), "demand": int(demand)}
+        if row.get("released_at") is not None:
+            item["released_at"] = _parse_ts(row["released_at"]).isoformat()
+        clean.append(item)
     return clean
 
 
