@@ -27,9 +27,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = ["ignore:The 'generic' unit for NumPy timedelta:DeprecationWarning"]
 
 [tool.ruff]
-line-length = 100
+line-length = 110
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -38,3 +39,7 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
 "scripts/*" = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Las reglas (PromotionRules, RetrainRules) son dataclasses inmutables: seguras como valor por defecto.
+extend-immutable-calls = ["pulso.policy.PromotionRules", "pulso.policy.RetrainRules"]

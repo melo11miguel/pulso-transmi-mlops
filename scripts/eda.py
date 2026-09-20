@@ -90,7 +90,7 @@ fig, axes = plt.subplots(1, 3, figsize=(11, 3.4), sharey=True)
 hours = np.arange(24)
 station_mean = df.groupby("station_id")["demand"].transform("mean")
 df["rel"] = df["demand"] / station_mean  # siempre respecto a la media global de la estación
-for ax, g in zip(axes, "ABC"):
+for ax, g in zip(axes, "ABC", strict=True):
     for wknd, ls, lab in [(False, "-", "entre semana"), (True, "--", "fin de semana")]:
         sub = df[(df["group"] == g) & (df["weekend"] == wknd)]
         prof = sub.groupby("hour")["rel"].mean().reindex(hours)
