@@ -83,9 +83,9 @@ Detalle y límites honestos: [`reports/eda.md`](reports/eda.md) ·
 src/pulso/       api · supa · ingest · features · model · baselines · backtest · registry
                  train · predict · monitor · monitor_job · policy · stress · quality
 supabase/migrations/   esquema SQL reproducible (0001-0003)
-scripts/         eda.py · run_backtests.py · drift_stress.py · practice_submit.py
+scripts/         download_data.py · eda.py · run_backtests.py · drift_stress.py · practice_submit.py
 reports/         análisis exploratorio, backtesting y estrés de drift (con figuras)
-tests/            pruebas (sin red: API y Supabase simulados)
+tests/           144 pruebas (sin red: API y Supabase simulados)
 .github/workflows/  ci · collect-and-predict · collect-and-monitor · train
 docs/runbook.md  puesta en marcha, operación y diagnóstico
 ```
@@ -100,7 +100,8 @@ champion inicial y definir la variable `PIPELINE_ENABLED=true` para activar los 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 python -m pip install -r requirements.txt && python -m pip install -e '.[eda,dev]'
-pytest                                   #  pruebas, sin red
+pytest                                   # 144 pruebas, sin red
+python scripts/download_data.py          # baja el corte inicial a data/ (hash verificado)
 python scripts/eda.py                    # regenera reports/eda.md
 python scripts/run_backtests.py          # regenera reports/backtest.md (varios minutos)
 python scripts/drift_stress.py           # regenera reports/drift_stress.md
