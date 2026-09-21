@@ -3,13 +3,14 @@
 import json
 
 import httpx
+import numpy as np  # noqa: E402
 import pandas as pd
 import pytest
 
 from pulso.api import PulsoApiError
 from pulso.http import send
 from pulso.quality import DataQualityError, quality_report, validate_observations
-from pulso.supa import Supabase, SupabaseError
+from pulso.supa import Supabase, SupabaseError, clean_json
 
 KNOWN = {"02300", "03000"}
 GOOD = {"station_id": "02300", "observed_at": "2026-09-16T10:15:00-05:00", "demand": 10}
@@ -221,3 +222,23 @@ def test_supabase_rpc_and_upload():
     db.upload("models", "v1/model.joblib", b"abc")
     assert seen[0][0] == "/rest/v1/rpc/ingest_observations"
     assert seen[1][0] == "/storage/v1/object/models/v1/model.joblib" and seen[1][1] == "false"
+
+
+def test_clean_json_removes_nan_and_numpy_types():
+    dirty = {"a": float("nan"), "b": [1.0, float("inf")], "c": np.float64(2.5), "d": np.int64(3),
+             5: {"x": np.float32("nan")}, "e": pd.Timestamp("2026-09-01", tz="UTC")}
+    clean = clean_json(dirty)
+    assert clean == {"a": None, "b": [1.0, None], "c": 2.5, "d": 3, 5: {"x": None},
+                     "e": "2026-09-01T00:00:00+00:00"}
+    assert json.dumps(clean, allow_nan=False)  # JSON estricto: no lanza
+
+
+def test_supabase_sends_strict_json_even_with_nan():
+    bodies = []
+
+    def handler(request):
+        bodies.append(request.content)
+        return httpx.Response(201, json=[{"id": 1}])
+
+    _supabase(handler).insert("model_versions", {"params": {"level_noise": {"02300": float("nan")}}})
+    assert b"NaN" not in bodies[0] and json.loads(bodies[0])["params"]["level_noise"]["02300"] is None

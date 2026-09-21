@@ -11,10 +11,30 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
+import numpy as np
+import pandas as pd
 
 from .http import send
 
 PAGE = 1000  # tope por defecto de filas por respuesta en PostgREST
+
+
+def clean_json(value: Any) -> Any:
+    """Deja el valor listo para JSON válido: NaN/inf -> null, tipos numpy/pandas -> nativos.
+
+    `json.dumps` escribe NaN tal cual, y PostgreSQL (jsonb) rechazaría la petición completa.
+    """
+    if isinstance(value, dict):
+        return {(int(k) if isinstance(k, np.integer) else k): clean_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [clean_json(v) for v in value]
+    if isinstance(value, np.generic):
+        return clean_json(value.item())
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return value
 
 
 class SupabaseError(RuntimeError):
@@ -47,6 +67,8 @@ class Supabase:
         self._client.close()
 
     def _do(self, method: str, path: str, what: str, *, retries: int = 4, **kwargs):
+        if "json" in kwargs:
+            kwargs["json"] = clean_json(kwargs["json"])
         response = send(self._client, method, path, retries=retries, sleep=self._sleep, **kwargs)
         if response.status_code >= 400:
             raise SupabaseError(response.status_code, what, response.text)

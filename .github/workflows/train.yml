@@ -1,0 +1,45 @@
+name: Entrenar candidato
+
+# Entrena con todos los datos de Supabase, valida con una ventana temporal, compara con el
+# baseline y el champion, y promueve solo si supera los criterios (policy.PromotionRules).
+# Se ejecuta a mano (también la primera vez, para crear el champion inicial), cada día, o
+# cuando el monitor decide reentrenar.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Motivo del entrenamiento (queda registrado con la versión)
+        default: manual
+        required: false
+  schedule:
+    - cron: "20 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TRAIN_REASON: "${{ inputs.reason || 'schedule - entrenamiento diario' }}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Instalar
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -e . --no-deps
+      - name: Entrenar, validar y decidir la promoción
+        run: python -m pulso.train

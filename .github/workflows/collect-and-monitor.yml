@@ -1,0 +1,49 @@
+name: Recolectar y monitorear
+
+# Cerca del minuto 37 de cada hora (UTC): recoge el siguiente lote, evalúa las predicciones ya
+# resueltas, revisa drift y decide si reentrenar. Si la decisión es «retrain», dispara el
+# workflow de entrenamiento; ese workflow aplica la regla de promoción (no promueve por novedad).
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # necesario solo para disparar el entrenamiento
+
+concurrency:
+  group: collect-and-monitor
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PULSO_API_URL: ${{ vars.PULSO_API_URL }}
+      PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Instalar
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -e . --no-deps
+      - name: Recolectar observaciones nuevas
+        run: python -m pulso.ingest
+      - name: Evaluar, detectar drift y decidir
+        id: monitor
+        run: python -m pulso.monitor_job
+      - name: Disparar entrenamiento si la decisión es reentrenar
+        if: steps.monitor.outputs.decision == 'retrain'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: 'gh workflow run train.yml -f reason="monitor - reentrenar (run ${{ github.run_id }})"'

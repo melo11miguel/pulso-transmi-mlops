@@ -1,0 +1,9 @@
+# Versiones exactas del pipeline. Un artefacto de scikit-learn solo carga con la misma versión con
+# la que se entrenó (registry.py lo verifica), así que entrenar e inferir usan este mismo archivo.
+numpy==2.5.3
+pandas==2.3.3
+scikit-learn==1.9.1
+scipy==1.18.1
+joblib==1.6.0
+threadpoolctl==3.7.0
+httpx==0.28.1

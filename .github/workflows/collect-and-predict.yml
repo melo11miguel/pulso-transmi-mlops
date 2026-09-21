@@ -1,0 +1,44 @@
+name: Recolectar y predecir
+
+# Cerca del minuto 07 de cada hora (UTC): recoge el lote, descubre el ciclo, predice y envía.
+# GitHub solo despierta el proceso: la decisión final la toma la API (ciclo abierto y closes_at).
+# El cron puede retrasarse; por eso el código nunca asume la hora.
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Una sola ejecución a la vez: evita entregas duplicadas para el mismo ciclo.
+concurrency:
+  group: collect-and-predict
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # Los disparos programados solo corren si el repositorio define PIPELINE_ENABLED=true
+    if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PULSO_API_URL: ${{ vars.PULSO_API_URL }}
+      PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Instalar
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -e . --no-deps
+      - name: Recolectar observaciones nuevas
+        run: python -m pulso.ingest
+      - name: Predecir y enviar (si hay ciclo abierto)
+        run: python -m pulso.predict
