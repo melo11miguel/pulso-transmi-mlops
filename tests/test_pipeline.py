@@ -1,5 +1,7 @@
 """Pruebas de política, monitoreo, estrés, registro, entrenamiento e inferencia de punta a punta."""
 
+from datetime import timedelta
+
 import httpx
 import numpy as np
 import pandas as pd
@@ -755,3 +757,156 @@ def test_monitor_cooldown_after_recent_training(competition):
                                        "accuracy": 40.0})
     result = run_monitor(db, registry, now=NOW)
     assert result["decision"] == "investigate" and "enfriamiento" in result["reason"]
+
+
+# ------------------------------------------------------------------ espera dentro de la ventana
+from pulso.predict import run_inference_waiting  # noqa: E402
+
+
+class FakeClock:
+    """Reloj monótono falso: sólo avanza cuando se 'duerme'."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+        self.sleeps: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.t += seconds
+
+    def now(self) -> float:
+        return self.t
+
+
+def test_waiting_submits_immediately_when_a_cycle_is_open(world):
+    db, registry, server, api, now, _ = world
+    clock = FakeClock()
+    result = run_inference_waiting(api, db, registry, wait_seconds=2700, sleep=clock.sleep,
+                                   clock=clock.now, now_fn=lambda: now)
+    assert result["status"] == "submitted" and clock.sleeps == []  # no esperó
+
+
+def test_waiting_polls_until_the_cycle_opens_then_submits(world):
+    db, registry, server, api, now, wide = world
+    pending = _cycle(wide)
+    server.cycle = None  # aún no abre
+
+    clock = FakeClock()
+    original_sleep = clock.sleep
+
+    def sleep_and_open(seconds):
+        original_sleep(seconds)
+        if len(clock.sleeps) == 3:  # al tercer intento abre la ventana
+            server.cycle = pending
+
+    result = run_inference_waiting(api, db, registry, wait_seconds=2700, poll_seconds=60,
+                                   sleep=sleep_and_open, clock=clock.now, now_fn=lambda: now)
+    assert result["status"] == "submitted" and result["waited_polls"] == 4
+    assert clock.sleeps == [60, 60, 60]
+    assert db.tables["submissions"][0]["status"] == "accepted"
+
+
+def test_waiting_gives_up_at_the_deadline_without_failing(world):
+    db, registry, server, api, _, _ = world
+    server.cycle = None
+    clock = FakeClock()
+    result = run_inference_waiting(api, db, registry, wait_seconds=300, poll_seconds=60,
+                                   sleep=clock.sleep, clock=clock.now)
+    assert result == {"status": "skipped", "reason": "no_open_cycle", "waited_polls": 6}
+    assert sum(clock.sleeps) == 300  # no se pasa del plazo
+    assert not db.tables.get("submissions")
+
+
+def test_waiting_does_not_wait_when_the_cycle_was_already_submitted(world):
+    db, registry, server, api, now, _ = world
+    run_inference(api, db, registry, now=now)  # primera entrega
+    clock = FakeClock()
+    result = run_inference_waiting(api, db, registry, wait_seconds=2700, sleep=clock.sleep,
+                                   clock=clock.now, now_fn=lambda: now)
+    assert result["reason"] == "already_submitted" and clock.sleeps == []
+
+
+def test_waiting_zero_behaves_like_a_single_attempt(world):
+    db, registry, server, api, _, _ = world
+    server.cycle = None
+    clock = FakeClock()
+    result = run_inference_waiting(api, db, registry, wait_seconds=0, sleep=clock.sleep,
+                                   clock=clock.now)
+    assert result == {"status": "skipped", "reason": "no_open_cycle"} and clock.sleeps == []
+
+
+def test_waiting_never_sleeps_past_the_deadline(world):
+    db, registry, server, api, _, _ = world
+    server.cycle = None
+    clock = FakeClock()
+    run_inference_waiting(api, db, registry, wait_seconds=150, poll_seconds=60,
+                          sleep=clock.sleep, clock=clock.now)
+    assert clock.sleeps == [60, 60, 30]  # el último se recorta para no pasarse
+
+
+def test_waiting_rereads_the_wall_clock_so_a_closing_window_is_noticed(world):
+    """Mientras se espera, la ventana puede cerrarse: la hora debe releerse en cada intento."""
+    db, registry, server, api, now, _ = world
+    pending = server.cycle
+    server.cycle = None
+    clock = FakeClock()
+
+    def moving_now():  # la hora de pared avanza junto con el reloj monótono
+        return now + timedelta(seconds=clock.t)
+
+    def sleep_then_open(seconds):
+        clock.sleep(seconds)
+        server.cycle = pending  # abre, pero para entonces su closes_at ya pasó
+
+    result = run_inference_waiting(api, db, registry, wait_seconds=7200, poll_seconds=3600,
+                                   sleep=sleep_then_open, clock=clock.now, now_fn=moving_now)
+    # Con la hora congelada habría enviado; al releerla, ve la ventana cerrada.
+    assert result["reason"] == "cycle_closed"
+    assert not db.tables.get("submissions")
+
+
+def test_sync_runs_once_just_before_building_the_prediction(world):
+    """El sincronizador corre solo cuando se va a entregar, y una sola vez."""
+    db, registry, server, api, now, _ = world
+    calls = []
+    result = run_inference(api, db, registry, now=now, sync=lambda: calls.append("sync"))
+    assert result["status"] == "submitted" and calls == ["sync"]
+
+
+@pytest.mark.parametrize("setup, reason", [
+    (lambda server, db, registry, api, now: setattr(server, "cycle", None), "no_open_cycle"),
+    (lambda server, db, registry, api, now: run_inference(api, db, registry, now=now),
+     "already_submitted"),
+])
+def test_sync_does_not_run_when_there_is_nothing_to_submit(world, setup, reason):
+    db, registry, server, api, now, _ = world
+    setup(server, db, registry, api, now)
+    calls = []
+    result = run_inference(api, db, registry, now=now, sync=lambda: calls.append("sync"))
+    assert result["reason"] == reason and calls == []
+
+
+def test_sync_does_not_run_for_a_closed_window(world):
+    db, registry, server, api, _, _ = world
+    late = pd.Timestamp(server.cycle["closes_at"]).to_pydatetime() + timedelta(minutes=1)
+    calls = []
+    result = run_inference(api, db, registry, now=late, sync=lambda: calls.append("sync"))
+    assert result["reason"] == "cycle_closed" and calls == []
+
+
+def test_waiting_passes_the_sync_through_on_the_attempt_that_submits(world):
+    db, registry, server, api, now, wide = world
+    pending = server.cycle
+    server.cycle = None
+    clock = FakeClock()
+    calls = []
+
+    def sleep_then_open(seconds):
+        clock.sleep(seconds)
+        server.cycle = pending
+
+    result = run_inference_waiting(api, db, registry, wait_seconds=600, poll_seconds=60,
+                                   sleep=sleep_then_open, clock=clock.now, now_fn=lambda: now,
+                                   sync=lambda: calls.append("sync"))
+    assert result["status"] == "submitted"
+    assert calls == ["sync"]  # no se sincroniza en los intentos sin ciclo

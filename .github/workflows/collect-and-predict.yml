@@ -23,7 +23,8 @@ jobs:
     # Los disparos programados solo corren si el repositorio define PIPELINE_ENABLED=true
     if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cubre la espera dentro de la ventana (50 min) más la instalación.
+    timeout-minutes: 65
     env:
       PULSO_API_URL: ${{ vars.PULSO_API_URL }}
       PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
@@ -42,5 +43,9 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Recolectar observaciones nuevas
         run: python -m pulso.ingest
-      - name: Predecir y enviar (si hay ciclo abierto)
-        run: python -m pulso.predict
+      # Si al despertar no hay ciclo abierto, el job espera hasta 50 minutos a que abra uno, en vez
+      # de rendirse: los cron de GitHub se retrasan y se saltan ejecuciones, así que basta con que
+      # arranque UNA ejecución por hora para cubrir la ventana. Vuelve a sincronizar justo antes de
+      # entregar, porque entre despertar y entregar la API libera datos nuevos.
+      - name: Esperar el ciclo, predecir y enviar
+        run: python -m pulso.predict --wait-for-cycle 50

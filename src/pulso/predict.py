@@ -15,6 +15,8 @@ import hashlib
 import json
 import logging
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -26,9 +28,11 @@ from .api import PulsoApi, PulsoApiError
 from .config import Settings
 from .dbdata import load_wide
 from .features import STEP
+from .ingest import run_collector
 from .model import GbmResidualModel
 from .registry import ModelRegistry, RegistryError, current_git_commit
 from .runlog import pipeline_run
+from .store import SupabaseStore
 from .supa import Supabase
 
 log = logging.getLogger("pulso.predict")
@@ -157,8 +161,14 @@ def _now() -> str:
 
 
 def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
-                  dry_run: bool = False, now: datetime | None = None) -> dict[str, Any]:
-    """Un ciclo de inferencia. Devuelve un resumen; lanza si algo falla (el workflow debe fallar)."""
+                  dry_run: bool = False, now: datetime | None = None,
+                  sync: Callable[[], Any] | None = None) -> dict[str, Any]:
+    """Un ciclo de inferencia. Devuelve un resumen; lanza si algo falla (el workflow debe fallar).
+
+    `sync` (opcional) se ejecuta justo antes de leer la historia, una sola vez y solo cuando el
+    ciclo está abierto y falta entregarlo: recolecta las observaciones más recientes para que el
+    modelo prediga con los rezagos del corte y no con datos viejos.
+    """
     cycle = api.current_cycle()
     if cycle is None:
         return {"status": "skipped", "reason": "no_open_cycle"}
@@ -184,6 +194,8 @@ def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
             db.update("forecast_cycles", {"outcome": "missed"}, {"cycle_id": f"eq.{cycle_id}"})
         return {"status": "skipped", "reason": "cycle_closed", "cycle_id": cycle_id}
 
+    if sync is not None:
+        sync()
     champion_row, model = registry.load_champion()
     history = load_wide(db, until=cycle["data_cutoff"])
     predictions, fallback = build_predictions(model, history, cycle)
@@ -239,9 +251,40 @@ def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
             "attempt": receipt.get("attempt"), "http": status, **summary}
 
 
+def run_inference_waiting(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
+                          wait_seconds: float, poll_seconds: float = 60.0,
+                          dry_run: bool = False, sleep: Callable[[float], None] = time.sleep,
+                          clock: Callable[[], float] = time.monotonic,
+                          now_fn: Callable[[], datetime] | None = None,
+                          sync: Callable[[], Any] | None = None) -> dict[str, Any]:
+    """Como `run_inference`, pero si no hay ciclo abierto espera a que abra uno.
+
+    Los cron de GitHub Actions se retrasan y a menudo se saltan ejecuciones, así que no se puede
+    depender de que un disparo caiga dentro de la ventana de 25 minutos. Esperando dentro del job,
+    basta con que GitHub arranque UNA ejecución en la hora previa para cubrir el ciclo.
+
+    Solo espera ante `no_open_cycle`: cualquier otro motivo (ya entregado, ventana cerrada) termina
+    de inmediato, y un error se propaga como siempre.
+    """
+    now_fn = now_fn or (lambda: datetime.now(UTC))
+    deadline = clock() + wait_seconds
+    attempts = 0
+    while True:
+        # La hora se relee en cada intento: mientras se espera, la ventana puede abrir o cerrar.
+        result = run_inference(api, db, registry, dry_run=dry_run, now=now_fn(), sync=sync)
+        attempts += 1
+        if result.get("reason") != "no_open_cycle" or clock() >= deadline:
+            if attempts > 1:
+                result["waited_polls"] = attempts
+            return result
+        sleep(min(poll_seconds, max(0.0, deadline - clock())))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Predice el ciclo abierto y envía la entrega")
     parser.add_argument("--dry-run", action="store_true", help="construye y valida sin enviar")
+    parser.add_argument("--wait-for-cycle", type=float, default=0.0, metavar="MINUTOS",
+                        help="si no hay ciclo abierto, espera hasta N minutos a que abra uno")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -251,7 +294,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with pipeline_run(db, "predict") as run, \
                 PulsoApi(settings.api_url, settings.require_api_key()) as api:
-            result = run_inference(api, db, ModelRegistry(db), dry_run=args.dry_run)
+            store = SupabaseStore(db)
+            result = run_inference_waiting(
+                api, db, ModelRegistry(db), wait_seconds=args.wait_for_cycle * 60,
+                dry_run=args.dry_run,
+                # Sincroniza en el último momento: entre despertar y entregar pueden pasar
+                # 30+ minutos de espera y la API libera datos nuevos cada 30 min.
+                sync=lambda: run_collector(api, store),
+            )
             run.summary.update(result)
             if result["status"] == "skipped":
                 run.skip(result["reason"])
