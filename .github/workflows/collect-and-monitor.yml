@@ -1,11 +1,11 @@
 name: Recolectar y monitorear
 
-# Cerca del minuto 37 de cada hora (UTC): recoge el siguiente lote, evalúa las predicciones ya
-# resueltas, revisa drift y decide si reentrenar. Si la decisión es «retrain», dispara el
-# workflow de entrenamiento; ese workflow aplica la regla de promoción (no promueve por novedad).
+# Cada 30 minutos (la API libera datos nuevos con esa cadencia): recoge el siguiente lote, evalúa
+# las predicciones ya resueltas, revisa drift y decide si reentrenar. Si la decisión es «retrain»,
+# dispara el entrenamiento; ese workflow aplica la regla de promoción (no promueve por novedad).
 on:
   schedule:
-    - cron: "37 * * * *"
+    - cron: "5,35 * * * *"
   workflow_dispatch:
 
 permissions:

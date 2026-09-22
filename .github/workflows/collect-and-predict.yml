@@ -1,11 +1,13 @@
 name: Recolectar y predecir
 
-# Cerca del minuto 07 de cada hora (UTC): recoge el lote, descubre el ciclo, predice y envía.
-# GitHub solo despierta el proceso: la decisión final la toma la API (ciclo abierto y closes_at).
-# El cron puede retrasarse; por eso el código nunca asume la hora.
+# Cada 10 minutos (guía operativa v2.0): recoge el lote, descubre el ciclo, predice y envía.
+# Los ciclos abren una vez por hora con una ventana de 25 minutos, y el cron de GitHub puede
+# retrasarse varios minutos; despertar cada 10 min da ~3 oportunidades dentro de cada ventana.
+# Despertar tres veces no significa enviar tres veces: si ya hay un recibo aceptado para el
+# ciclo, `pulso.predict` termina en verde sin reenviar. La API decide siempre (ciclo y closes_at).
 on:
   schedule:
-    - cron: "7 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
