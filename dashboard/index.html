@@ -3,142 +3,280 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pulso TransMi · Estado del pipeline</title>
+<title>Pulso TransMi · Operación del modelo</title>
+<meta name="description" content="Estado en vivo del pipeline MLOps: accuracy, cobertura, drift y operación.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📈</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
     color-scheme: light;
-    --surface:#fcfcfb; --panel:#ffffff; --line:#e4e3df;
-    --ink:#0b0b0b; --ink2:#52514e; --ink3:#86847e;
-    --blue:#2a78d6; --orange:#eb6834; --aqua:#1baf7a; --red:#e34948; --gray:#a9a8a2;
+    --surface:#fbfbfa; --panel:#ffffff; --panel-2:#f6f6f4; --line:#e6e5e1; --line-2:#d8d7d2;
+    --ink:#0c0c0b; --ink2:#55534e; --ink3:#8a877f;
+    --blue:#2a78d6; --orange:#eb6834; --aqua:#1baf7a; --red:#e34948; --amber:#eda100;
+    --shadow: 0 1px 2px rgba(12,12,11,.04), 0 4px 12px rgba(12,12,11,.04);
+    --radius:14px;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       color-scheme: dark;
-      --surface:#1a1a19; --panel:#232322; --line:#383835;
-      --ink:#ffffff; --ink2:#c3c2b7; --ink3:#8d8b83;
-      --blue:#3987e5; --orange:#d95926; --aqua:#199e70; --red:#e66767; --gray:#6f6e69;
+      --surface:#141413; --panel:#1d1d1c; --panel-2:#232322; --line:#2f2f2d; --line-2:#3c3b38;
+      --ink:#f7f7f5; --ink2:#b9b7ae; --ink3:#87857d;
+      --blue:#4d94ea; --orange:#e0703f; --aqua:#25b586; --red:#ec6a69; --amber:#d99b1f;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.25);
     }
   }
   *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
   body{margin:0;background:var(--surface);color:var(--ink);
-       font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-  .wrap{max-width:1120px;margin:0 auto;padding:28px 16px 64px}
-  header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content:space-between;
-         border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px}
-  h1{font-size:22px;margin:0;letter-spacing:-.01em}
-  h2{font-size:15px;margin:0 0 14px;letter-spacing:.02em;text-transform:uppercase;color:var(--ink2)}
-  .sub{color:var(--ink2);font-size:13px}
-  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));margin-bottom:26px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
-  .k{font-size:12px;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
-  .v{font-size:30px;font-weight:650;letter-spacing:-.02em;line-height:1.1}
-  .u{font-size:15px;font-weight:500;color:var(--ink2)}
-  .note{font-size:12.5px;color:var(--ink3);margin-top:6px}
-  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-          padding:18px 20px;margin-bottom:18px}
-  table{width:100%;border-collapse:collapse;font-size:13.5px}
-  th{text-align:left;font-weight:600;color:var(--ink2);font-size:12px;text-transform:uppercase;
-     letter-spacing:.03em;padding:0 10px 8px 0;border-bottom:1px solid var(--line)}
-  td{padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:middle}
-  tr:last-child td{border-bottom:none}
-  .bar{height:9px;border-radius:5px;background:var(--blue);min-width:3px}
-  .track{background:var(--line);border-radius:5px;height:9px;width:100%}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
-  .ok{background:var(--aqua)} .warn{background:var(--orange)} .bad{background:var(--red)}
-  .muted{color:var(--ink2)}
-  .right{text-align:right}
-  .mono{font-variant-numeric:tabular-nums}
-  .cols{display:grid;gap:18px;grid-template-columns:1fr 1fr}
-  @media (max-width:760px){.cols{grid-template-columns:1fr}}
-  .legend{font-size:12.5px;color:var(--ink2);margin-top:10px}
-  .legend span{margin-right:16px}
-  .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;
-        padding:2px 9px;font-size:12px;color:var(--ink2)}
-  footer{color:var(--ink3);font-size:12.5px;margin-top:28px;text-align:center}
-  a{color:var(--blue)}
+       font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;
+       font-variant-numeric:tabular-nums}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px 72px}
+
+  /* ---------- cabecera ---------- */
+  .top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--surface) 88%,transparent);
+       backdrop-filter:saturate(1.6) blur(10px);border-bottom:1px solid var(--line);margin-bottom:28px}
+  .top-in{max-width:1180px;margin:0 auto;padding:16px 20px;display:flex;flex-wrap:wrap;
+          gap:14px;align-items:center;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:12px;min-width:0}
+  .mark{width:34px;height:34px;border-radius:9px;flex:none;
+        background:linear-gradient(140deg,var(--blue),var(--aqua));
+        display:grid;place-items:center;color:#fff;font-weight:700;font-size:15px;letter-spacing:-.02em}
+  h1{font-size:16px;font-weight:600;margin:0;letter-spacing:-.01em;white-space:nowrap}
+  .crumb{font-size:12.5px;color:var(--ink3);margin-top:1px}
+  .top-right{display:flex;align-items:center;gap:14px;font-size:12.5px;color:var(--ink2)}
+  .live{display:inline-flex;align-items:center;gap:7px;font-weight:500}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--aqua);
+         box-shadow:0 0 0 0 color-mix(in srgb,var(--aqua) 60%,transparent);animation:p 2.4s infinite}
+  @keyframes p{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--aqua) 55%,transparent)}
+               70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  .ghost{border:1px solid var(--line-2);background:var(--panel);color:var(--ink2);
+         border-radius:8px;padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer}
+  .ghost:hover{border-color:var(--ink3);color:var(--ink)}
+
+  /* ---------- bloques ---------- */
+  .kpis{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(224px,1fr));margin-bottom:22px}
+  .card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+               box-shadow:var(--shadow)}
+  .card{padding:17px 19px 16px}
+  .label{font-size:11.5px;font-weight:600;color:var(--ink3);letter-spacing:.06em;
+         text-transform:uppercase;margin-bottom:9px}
+  .big{font-size:33px;font-weight:650;letter-spacing:-.025em;line-height:1.05;display:flex;
+       align-items:baseline;gap:5px}
+  .big small{font-size:14px;font-weight:500;color:var(--ink2);letter-spacing:0}
+  .foot{font-size:12.5px;color:var(--ink3);margin-top:8px;display:flex;align-items:center;gap:7px}
+  .panel{padding:20px 22px;margin-bottom:18px}
+  .ph{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:4px}
+  h2{font-size:14.5px;font-weight:600;margin:0;letter-spacing:-.005em}
+  .hint{font-size:12.5px;color:var(--ink3)}
+  .cols{display:grid;gap:18px;grid-template-columns:1.15fr 1fr}
+  @media (max-width:880px){.cols{grid-template-columns:1fr}}
+
+  /* ---------- tablas ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:12px}
+  th{text-align:left;font-weight:600;color:var(--ink3);font-size:11px;letter-spacing:.05em;
+     text-transform:uppercase;padding:0 12px 9px 0;border-bottom:1px solid var(--line)}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:var(--panel-2)}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .dim{color:var(--ink2)}
+  .track{background:var(--line);border-radius:99px;height:6px;width:100%;overflow:hidden}
+  .fill{height:6px;border-radius:99px;background:var(--blue)}
+
+  /* ---------- estados ---------- */
+  .pill{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:3px 9px;
+        font-size:11.5px;font-weight:500;border:1px solid transparent;white-space:nowrap}
+  .pill.ok{color:var(--aqua);background:color-mix(in srgb,var(--aqua) 12%,transparent);
+           border-color:color-mix(in srgb,var(--aqua) 26%,transparent)}
+  .pill.warn{color:var(--amber);background:color-mix(in srgb,var(--amber) 14%,transparent);
+             border-color:color-mix(in srgb,var(--amber) 30%,transparent)}
+  .pill.bad{color:var(--red);background:color-mix(in srgb,var(--red) 12%,transparent);
+            border-color:color-mix(in srgb,var(--red) 28%,transparent)}
+  .pill.mute{color:var(--ink2);background:var(--panel-2);border-color:var(--line)}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none;background:currentColor}
+
+  /* ---------- gráficas ---------- */
+  .chart{position:relative}
+  .chart svg{display:block;width:100%;height:auto;overflow:visible}
+  .tip{position:absolute;pointer-events:none;opacity:0;transition:opacity .12s;
+       background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:8px 11px;
+       box-shadow:var(--shadow);font-size:12.5px;white-space:nowrap;z-index:5}
+  .tip b{font-weight:600}
+  .tip .t{color:var(--ink3);font-size:11.5px;display:block;margin-bottom:2px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:12.5px;color:var(--ink2)}
+  .legend i{display:inline-block;width:18px;height:2.5px;border-radius:2px;margin-right:7px;
+            vertical-align:3px}
+  .legend .ref{height:0;border-top:2px dashed var(--ink3);width:18px}
+
+  /* ---------- carga y vacío ---------- */
+  .skel{background:linear-gradient(90deg,var(--panel-2) 25%,var(--line) 37%,var(--panel-2) 63%);
+        background-size:400% 100%;animation:s 1.3s infinite;border-radius:8px}
+  @keyframes s{0%{background-position:100% 0}100%{background-position:0 0}}
+  .empty{color:var(--ink3);font-size:13px;padding:22px 0;text-align:center}
+  footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);
+         color:var(--ink3);font-size:12px;line-height:1.7}
+  footer a{color:var(--ink2)}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div>
-      <h1>Pulso TransMi · estado del pipeline</h1>
-      <div class="sub" id="sub">Cargando…</div>
+
+<div class="top">
+  <div class="top-in">
+    <div class="brand">
+      <div class="mark">PT</div>
+      <div>
+        <h1>Pulso TransMi · operación del modelo</h1>
+        <div class="crumb" id="crumb">Proyecto 1 · MLOps · Universidad Externado</div>
+      </div>
     </div>
-    <div class="sub" id="stamp"></div>
-  </header>
-  <div id="app"></div>
+    <div class="top-right">
+      <span class="live" id="live"><span class="pulse"></span><span id="liveTxt">conectando…</span></span>
+      <button class="ghost" id="refresh" type="button">Actualizar</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="app">
+    <div class="kpis">
+      <div class="card"><div class="skel" style="height:74px"></div></div>
+      <div class="card"><div class="skel" style="height:74px"></div></div>
+      <div class="card"><div class="skel" style="height:74px"></div></div>
+      <div class="card"><div class="skel" style="height:74px"></div></div>
+    </div>
+    <div class="panel"><div class="skel" style="height:220px"></div></div>
+  </div>
+
   <footer>
-    Página estática. Lee una función agregada de Supabase con la clave publicable, que solo puede
-    ejecutar esa función: las tablas siguen protegidas con RLS. Ninguna credencial privada
-    (service_role ni la API key del reto) interviene aquí. Se omiten los nombres de otros participantes.
+    Página estática. Consulta una función agregada de Supabase con la clave publicable, que solo
+    puede ejecutar esa función: las tablas permanecen protegidas con RLS. Ninguna credencial privada
+    interviene y no se publican nombres de otros participantes.
+    <br>Código: <a href="https://github.com/melo11miguel/pulso-transmi-mlops">melo11miguel/pulso-transmi-mlops</a>
   </footer>
 </div>
 
 <script>
+const SUPABASE = "https://tjqrgdzvhfxfovmwgzgv.supabase.co";
+const PUBLICABLE = "sb_publishable_axm56d948_AypTU8SbqKnA_S9vV7r9K";
+const TECHO = 89;            // techo teórico medido sobre el histórico (ruido binomial negativo)
+const REFRESCO_MS = 60000;
+
 const $ = (s) => document.querySelector(s);
-const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? "—" : Number(v).toFixed(d));
-const pct = (v) => (v === null || v === undefined ? "—" : (v * 100).toFixed(0) + " %");
+const num = (v, d = 2) => (v === null || v === undefined || Number.isNaN(Number(v)) ? "—" : Number(v).toFixed(d));
+const pc = (v, d = 0) => (v === null || v === undefined ? "—" : (v * 100).toFixed(d) + " %");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hora = (iso) => new Date(iso).toLocaleString("es-CO", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function hace(iso) {
-  if (!iso) return "—";
-  const min = Math.round((Date.now() - new Date(iso)) / 60000);
-  if (min < 1) return "hace segundos";
-  if (min < 60) return `hace ${min} min`;
-  const h = Math.floor(min / 60);
-  return h < 24 ? `hace ${h} h ${min % 60} min` : `hace ${Math.floor(h / 24)} d`;
+  if (!iso) return "sin registro";
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 1) return "hace instantes";
+  if (m < 60) return `hace ${m} min`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `hace ${h} h` : `hace ${Math.floor(h / 24)} d`;
+}
+function frescura(iso, limite) {
+  if (!iso) return "bad";
+  const m = (Date.now() - new Date(iso)) / 60000;
+  return m <= limite ? "ok" : m <= limite * 2 ? "warn" : "bad";
 }
 
-function card(k, v, u, note, color) {
-  return `<div class="card"><div class="k">${k}</div>
-    <div class="v" ${color ? `style="color:${color}"` : ""}>${v}<span class="u">${u || ""}</span></div>
-    ${note ? `<div class="note">${note}</div>` : ""}</div>`;
-}
-
-function serie(puntos) {
-  if (!puntos || puntos.length < 2) return '<div class="muted">Aún no hay suficientes ciclos evaluados.</div>';
-  const W = 820, H = 190, P = { l: 38, r: 12, t: 12, b: 24 };
-  const ys = puntos.map((p) => p.accuracy);
-  const lo = Math.max(0, Math.floor(Math.min(...ys) - 3)), hi = Math.min(100, Math.ceil(Math.max(...ys) + 3));
+/* ------------------------------------------------------------------ gráfica de líneas */
+function linea(id, puntos, opts) {
+  const { xKey, yKey, color, unidad = "", refs = [], invertir = false, etiqueta } = opts;
+  if (!puntos || puntos.length < 2) return `<div class="empty">${opts.vacio || "Aún no hay suficientes datos."}</div>`;
+  const W = 900, H = 230, P = { l: 44, r: 16, t: 18, b: 30 };
+  const vals = puntos.map((p) => p[yKey]).filter((v) => v != null);
+  const extra = refs.map((r) => r.v).filter((v) => v != null);
+  let lo = Math.min(...vals, ...extra), hi = Math.max(...vals, ...extra);
+  const pad = Math.max((hi - lo) * 0.18, invertir ? 0.6 : 1.2);
+  lo = invertir ? Math.max(1, Math.floor(lo - pad)) : Math.max(0, lo - pad);
+  hi = invertir ? Math.ceil(hi + pad) : Math.min(100, hi + pad);
   const x = (i) => P.l + (i * (W - P.l - P.r)) / (puntos.length - 1);
-  const y = (v) => P.t + (1 - (v - lo) / (hi - lo || 1)) * (H - P.t - P.b);
-  const d = puntos.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.accuracy).toFixed(1)}`).join("");
-  const ticks = [lo, Math.round((lo + hi) / 2), hi].map(
-    (v) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>
-            <text x="4" y="${y(v) + 4}" fill="var(--ink3)" font-size="11">${v}</text>`).join("");
-  const pts = puntos.map((p, i) =>
-    `<circle cx="${x(i).toFixed(1)}" cy="${y(p.accuracy).toFixed(1)}" r="3" fill="var(--blue)"
-      stroke="var(--panel)" stroke-width="1.5"><title>${new Date(p.hora).toLocaleString("es-CO")} · ${fmt(p.accuracy)} %</title></circle>`).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
-     aria-label="Accuracy por hora, de ${fmt(ys[0])} a ${fmt(ys[ys.length - 1])} por ciento">
-     ${ticks}<path d="${d}" fill="none" stroke="var(--blue)" stroke-width="2"
-     stroke-linejoin="round"/>${pts}</svg>
-     <div class="legend"><span>Accuracy oficial por hora objetivo · ${puntos.length} puntos</span></div>`;
+  const y = (v) => {
+    const t = (v - lo) / (hi - lo || 1);
+    return P.t + (invertir ? t : 1 - t) * (H - P.t - P.b);
+  };
+  const paso = (hi - lo) / 3;
+  const ticks = [0, 1, 2, 3].map((k) => {
+    const v = lo + paso * k;
+    return `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"
+              stroke="var(--line)" stroke-width="1"/>
+            <text x="${P.l - 9}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" fill="var(--ink3)"
+              font-size="11">${invertir ? "#" + Math.round(v) : Math.round(v)}</text>`;
+  }).join("");
+  const refLines = refs.filter((r) => r.v != null).map((r) => `
+    <line x1="${P.l}" x2="${W - P.r}" y1="${y(r.v).toFixed(1)}" y2="${y(r.v).toFixed(1)}"
+      stroke="${r.color || "var(--ink3)"}" stroke-width="1.5" stroke-dasharray="5 4" opacity=".75"/>
+    <text x="${W - P.r}" y="${(y(r.v) - 6).toFixed(1)}" text-anchor="end" fill="${r.color || "var(--ink3)"}"
+      font-size="11" font-weight="500">${esc(r.t)}</text>`).join("");
+  const d = puntos.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[yKey]).toFixed(1)}`).join(" ");
+  const area = `${d} L${x(puntos.length - 1).toFixed(1)},${H - P.b} L${x(0).toFixed(1)},${H - P.b} Z`;
+  const gid = `g-${id}`;
+  const cada = Math.max(1, Math.round(puntos.length / 5));
+  const xlabels = puntos.map((p, i) => (i % cada === 0 || i === puntos.length - 1)
+    ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="var(--ink3)" font-size="10.5">${
+        new Date(p[xKey]).toLocaleString("es-CO", { hour: "2-digit", minute: "2-digit" })}</text>` : "").join("");
+  const pts = puntos.map((p, i) => `<circle class="pt" data-i="${i}" cx="${x(i).toFixed(1)}"
+      cy="${y(p[yKey]).toFixed(1)}" r="3.2" fill="${color}" stroke="var(--panel)" stroke-width="1.6"/>`).join("");
+
+  return `<div class="chart" id="${id}">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(etiqueta || "")}">
+      <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0%" stop-color="${color}" stop-opacity=".16"/>
+        <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient></defs>
+      ${ticks}${refLines}
+      <path d="${area}" fill="url(#${gid})"/>
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${pts}${xlabels}
+      <line class="cross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" stroke="var(--ink3)"
+        stroke-width="1" stroke-dasharray="3 3" opacity="0"/>
+      <rect class="hit" x="${P.l}" y="${P.t}" width="${W - P.l - P.r}" height="${H - P.t - P.b}" fill="transparent"/>
+    </svg>
+    <div class="tip"></div>
+  </div>`;
 }
 
-function carrera(puntos) {
-  if (!puntos || puntos.length < 2) return '<div class="muted">Se dibuja cuando el monitor haya guardado varias lecturas.</div>';
-  const W = 820, H = 150, P = { l: 34, r: 12, t: 12, b: 22 };
-  const rangos = puntos.map((p) => p.puesto).filter((v) => v != null);
-  const mejor = Math.max(1, Math.min(...rangos) - 1), peor = Math.max(...rangos) + 1;
-  const x = (i) => P.l + (i * (W - P.l - P.r)) / (puntos.length - 1);
-  const y = (v) => P.t + ((v - mejor) / (peor - mejor || 1)) * (H - P.t - P.b);
-  const d = puntos.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.puesto).toFixed(1)}`).join("");
-  const guias = [mejor, Math.round((mejor + peor) / 2), peor].map(
-    (v) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>
-            <text x="4" y="${y(v) + 4}" fill="var(--ink3)" font-size="11">#${v}</text>`).join("");
-  const pts = puntos.map((p, i) =>
-    `<circle cx="${x(i).toFixed(1)}" cy="${y(p.puesto).toFixed(1)}" r="3" fill="var(--aqua)"
-      stroke="var(--panel)" stroke-width="1.5"><title>${new Date(p.cuando).toLocaleString("es-CO")} · #${p.puesto} · ${fmt(p.accuracy)} %</title></circle>`).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Puesto en el tiempo">
-    ${guias}<path d="${d}" fill="none" stroke="var(--aqua)" stroke-width="2" stroke-linejoin="round"/>${pts}</svg>
-    <div class="legend">Más arriba es mejor puesto · ${puntos.length} lecturas</div>`;
+function activarTooltip(id, puntos, fmt) {
+  const root = document.getElementById(id);
+  if (!root) return;
+  const svg = root.querySelector("svg"), tip = root.querySelector(".tip");
+  const cross = root.querySelector(".cross"), hit = root.querySelector(".hit");
+  const circles = [...root.querySelectorAll(".pt")];
+  if (!hit) return;
+  hit.addEventListener("mousemove", (ev) => {
+    const caja = svg.getBoundingClientRect();
+    const escala = 900 / caja.width;
+    const px = (ev.clientX - caja.left) * escala;
+    let mejor = 0, dist = Infinity;
+    circles.forEach((c, i) => {
+      const d = Math.abs(Number(c.getAttribute("cx")) - px);
+      if (d < dist) { dist = d; mejor = i; }
+    });
+    const c = circles[mejor];
+    cross.setAttribute("x1", c.getAttribute("cx"));
+    cross.setAttribute("x2", c.getAttribute("cx"));
+    cross.setAttribute("opacity", ".6");
+    circles.forEach((o, i) => o.setAttribute("r", i === mejor ? "5" : "3.2"));
+    tip.innerHTML = fmt(puntos[mejor]);
+    tip.style.opacity = "1";
+    const izq = (Number(c.getAttribute("cx")) / 900) * caja.width;
+    tip.style.left = Math.min(Math.max(izq - tip.offsetWidth / 2, 0), caja.width - tip.offsetWidth) + "px";
+    tip.style.top = (Number(c.getAttribute("cy")) / 230) * caja.height - tip.offsetHeight - 12 + "px";
+  });
+  hit.addEventListener("mouseleave", () => {
+    tip.style.opacity = "0";
+    cross.setAttribute("opacity", "0");
+    circles.forEach((o) => o.setAttribute("r", "3.2"));
+  });
 }
 
-function filas(items, max, render) {
-  return (items || []).slice(0, max).map(render).join("");
-}
-
+/* ------------------------------------------------------------------ render */
 function render(d) {
   const lb = d.leaderboard || {};
   const r = lb.rolling_24h, a = lb.cumulative;
@@ -146,140 +284,193 @@ function render(d) {
   const ciclos = d.ciclos || {};
   const m = d.modelo || {};
   const perdidos = ciclos.perdidos || 0;
-  const drift = (d.drift || []).filter((x) => x.desplazamiento !== null);
+  const drift = (d.drift || []).filter((x) => x.desplazamiento != null);
   const activos = drift.filter((x) => x.activo).length;
+  const sano = perdidos === 0 && !ops.errores_24h && !activos;
 
-  $("#sub").innerHTML = `Modelo <span class="chip">${m.version || "—"}</span>
-    · ${ciclos.entregados || 0} de ${ciclos.vistos || 0} ciclos entregados`;
-  $("#stamp").textContent = "Actualizado " + hace(d.generated_at);
+  $("#crumb").textContent = `${ciclos.entregados || 0} de ${ciclos.vistos || 0} ciclos entregados · modelo ${m.version || "—"}`;
+  $("#liveTxt").textContent = `actualizado ${hace(d.generated_at)}`;
+  $("#live").className = "live";
 
-  const cards = [
-    card("Accuracy real", fmt(d.accuracy_global), " %", `${d.targets_evaluados || 0} targets ya evaluados`),
-    card("Puesto · 24 h", r && r.puesto ? "#" + r.puesto : "—", r ? ` de ${r.participantes}` : "",
-         r ? `${fmt(r.accuracy)} % · mejor de la cohorte ${fmt(r.mejor_accuracy)} %` : "sin leaderboard"),
-    card("Cobertura · 24 h", r ? pct(r.cobertura) : "—", "",
-         r ? `mejor de la cohorte ${pct(r.mejor_cobertura)}` : ""),
-    card("Ciclos perdidos", perdidos, "", perdidos ? "revisar el pipeline" : "ninguno desde el inicio",
-         perdidos ? "var(--red)" : "var(--aqua)"),
-  ].join("");
+  const kpis = [
+    { l: "Accuracy real", v: num(d.accuracy_global), u: "%",
+      f: `${d.targets_evaluados || 0} targets evaluados · techo teórico ${TECHO} %`,
+      p: d.accuracy_global >= 84 ? "ok" : d.accuracy_global >= 78 ? "warn" : "bad" },
+    { l: "Puesto · 24 h", v: r && r.puesto ? "#" + r.puesto : "—",
+      u: r ? `de ${r.participantes}` : "",
+      f: r ? `${num(r.accuracy)} % · mejor de la cohorte ${num(r.mejor_accuracy)} %` : "sin lectura del leaderboard aún",
+      p: r && r.puesto <= 3 ? "ok" : r ? "warn" : "mute" },
+    { l: "Cobertura · 24 h", v: r ? pc(r.cobertura) : "—", u: "",
+      f: r ? `objetivo ≥ 95 % · mejor de la cohorte ${pc(r.mejor_cobertura)}` : "se llena con el próximo monitoreo",
+      p: r && r.cobertura >= 0.95 ? "ok" : r && r.cobertura >= 0.8 ? "warn" : r ? "bad" : "mute" },
+    { l: "Salud del pipeline", v: perdidos === 0 ? "0" : String(perdidos),
+      u: "ciclos perdidos",
+      f: sano ? "sin errores ni señales de drift" : `${ops.errores_24h || 0} errores · ${activos} señales activas`,
+      p: sano ? "ok" : "warn" },
+  ].map((k) => `<div class="card">
+      <div class="label">${k.l}</div>
+      <div class="big">${k.v}<small>${k.u}</small></div>
+      <div class="foot"><span class="pill ${k.p}"><span class="dot"></span></span>${k.f}</div>
+    </div>`).join("");
 
   const estaciones = (d.por_estacion || []).slice().sort((x, y) => y.accuracy - x.accuracy);
-  const maxAcc = Math.max(...estaciones.map((e) => e.accuracy), 1);
+  const tope = Math.max(...estaciones.map((e) => e.accuracy), 1);
 
-  const app = `
-  <div class="grid">${cards}</div>
+  const filaOps = (t, iso, limite) => {
+    const e = frescura(iso, limite);
+    return `<tr><td>${t}</td>
+      <td class="num dim">${iso ? hora(iso) : "—"}</td>
+      <td class="num"><span class="pill ${e}"><span class="dot"></span>${hace(iso)}</span></td></tr>`;
+  };
 
-  <section>
-    <h2>Accuracy a lo largo del tiempo</h2>
-    ${serie(d.serie_accuracy)}
-  </section>
+  $("#app").innerHTML = `
+  <div class="kpis">${kpis}</div>
 
-  <section>
-    <h2>Carrera: puesto en las últimas 24 h</h2>
-    ${carrera(d.historial_puesto)}
-  </section>
-
-  <div class="cols">
-    <section>
-      <h2>Por estación</h2>
-      <table><thead><tr><th>Estación</th><th class="right">Accuracy</th><th style="width:34%"></th></tr></thead>
-      <tbody>${filas(estaciones, 12, (e) => `<tr>
-        <td>${e.station_id} <span class="muted">${(e.nombre || "").slice(0, 22)}</span></td>
-        <td class="right mono">${fmt(e.accuracy)}</td>
-        <td><div class="track"><div class="bar" style="width:${(e.accuracy / maxAcc * 100).toFixed(1)}%"></div></div></td>
-      </tr>`)}</tbody></table>
-    </section>
-
-    <section>
-      <h2>Por horizonte</h2>
-      <table><thead><tr><th>Horizonte</th><th class="right">Accuracy</th><th class="right">Targets</th></tr></thead>
-      <tbody>${filas(d.por_horizonte || [], 4, (h) => `<tr>
-        <td>+${h.horizonte} min</td><td class="right mono">${fmt(h.accuracy)}</td>
-        <td class="right mono muted">${h.n}</td></tr>`)}</tbody></table>
-
-      <h2 style="margin-top:22px">Estado operativo</h2>
-      <table><tbody>
-        <tr><td>Último dato recolectado</td><td class="right muted">${hace(ops.ultima_ingesta)}</td></tr>
-        <tr><td>Última entrega aceptada</td><td class="right muted">${hace(ops.ultima_entrega)}</td></tr>
-        <tr><td>Último monitoreo</td><td class="right muted">${hace(ops.ultimo_monitoreo)}</td></tr>
-        <tr><td>Último entrenamiento</td><td class="right muted">${hace(ops.ultimo_entrenamiento)}</td></tr>
-        <tr><td>Errores en 24 h</td><td class="right mono">
-          <span class="dot ${ops.errores_24h ? "bad" : "ok"}"></span>${ops.errores_24h ?? "—"}</td></tr>
-      </tbody></table>
-    </section>
+  <div class="panel">
+    <div class="ph"><h2>Accuracy oficial por hora objetivo</h2>
+      <span class="hint">WAPE por estación, promediado sin ponderar</span></div>
+    ${linea("c-acc", d.serie_accuracy, { xKey: "hora", yKey: "accuracy", color: "var(--blue)",
+      etiqueta: "Accuracy por hora",
+      refs: [{ v: TECHO, t: `techo ${TECHO} %`, color: "var(--ink3)" },
+             r && r.mejor_accuracy ? { v: r.mejor_accuracy, t: "mejor cohorte", color: "var(--orange)" } : {}],
+      vacio: "Se dibuja cuando haya varios ciclos evaluados." })}
+    <div class="legend">
+      <span><i style="background:var(--blue)"></i>nuestro accuracy</span>
+      <span><i class="ref"></i>techo teórico ${TECHO} % · límite del ruido de los datos</span>
+      ${r && r.mejor_accuracy ? '<span><i class="ref" style="border-color:var(--orange)"></i>mejor de la cohorte</span>' : ""}
+    </div>
   </div>
 
   <div class="cols">
-    <section>
-      <h2>Drift de nivel por estación</h2>
-      <table><thead><tr><th>Estación</th><th class="right">Desplaz.</th><th class="right">Umbral</th>
-        <th class="right">Racha</th></tr></thead>
-      <tbody>${filas(drift, 12, (x) => `<tr>
-        <td><span class="dot ${x.activo ? "bad" : Math.abs(x.desplazamiento) > x.umbral * 0.7 ? "warn" : "ok"}"></span>${x.station_id}</td>
-        <td class="right mono">${fmt(x.desplazamiento, 3)}</td>
-        <td class="right mono muted">${fmt(x.umbral, 2)}</td>
-        <td class="right mono muted">${x.racha ?? 0}</td></tr>`)}</tbody></table>
-      <div class="legend"><span>Umbral propio de cada estación, calibrado con su ruido histórico.
-        ${activos ? activos + " con señal activa." : "Ninguna señal activa."}</span></div>
-    </section>
+    <div class="panel">
+      <div class="ph"><h2>Carrera: puesto en 24 h</h2><span class="hint">arriba es mejor</span></div>
+      ${linea("c-rank", d.historial_puesto, { xKey: "cuando", yKey: "puesto", color: "var(--aqua)",
+        invertir: true, etiqueta: "Puesto en el tiempo",
+        vacio: "Se dibuja cuando el monitor guarde varias lecturas." })}
+    </div>
 
-    <section>
-      <h2>Modelo y decisiones</h2>
-      <table><tbody>
-        <tr><td>Champion</td><td class="right mono">${m.version || "—"}</td></tr>
-        <tr><td>Accuracy de validación</td><td class="right mono">${fmt(m.accuracy_validacion)} %</td></tr>
-        <tr><td>Baseline (perfil puro)</td><td class="right mono muted">${fmt(m.baseline_validacion)} %</td></tr>
-        <tr><td>Datos hasta</td><td class="right muted">${m.datos_hasta ? new Date(m.datos_hasta).toLocaleString("es-CO") : "—"}</td></tr>
-        <tr><td>Commit</td><td class="right mono muted">${m.commit || "—"}</td></tr>
-      </tbody></table>
-      <h2 style="margin-top:22px">Últimas decisiones</h2>
-      <table><tbody>${filas(d.decisiones || [], 5, (x) => `<tr>
-        <td><span class="dot ${x.decision === "retrain" ? "warn" : x.decision === "investigate" ? "bad" : "ok"}"></span>${x.decision}</td>
-        <td class="muted" style="font-size:12.5px">${(x.razon || "").slice(0, 64)}</td>
-        <td class="right muted" style="white-space:nowrap">${hace(x.cuando)}</td></tr>`)}</tbody></table>
-    </section>
+    <div class="panel">
+      <div class="ph"><h2>Precisión por horizonte</h2><span class="hint">minutos hacia el futuro</span></div>
+      <table><thead><tr><th>Horizonte</th><th class="num">Accuracy</th><th class="num">Targets</th></tr></thead>
+        <tbody>${(d.por_horizonte || []).map((h) => `<tr>
+          <td>+${h.horizonte} min</td>
+          <td class="num">${num(h.accuracy)} %</td>
+          <td class="num dim">${h.n}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">Sin datos</td></tr>'}
+        </tbody></table>
+    </div>
   </div>
 
-  <section>
-    <h2>Versiones del modelo</h2>
-    <table><thead><tr><th>Versión</th><th>Estado</th><th class="right">Validación</th><th>Razón</th></tr></thead>
-    <tbody>${filas(d.versiones || [], 8, (v) => `<tr>
-      <td class="mono" style="font-size:12.5px">${v.version}</td>
-      <td><span class="dot ${v.estado === "champion" ? "ok" : v.estado === "rejected" ? "bad" : "warn"}"></span>${v.estado}</td>
-      <td class="right mono">${fmt(v.accuracy)}</td>
-      <td class="muted" style="font-size:12.5px">${(v.razon || "").slice(0, 70)}</td></tr>`)}</tbody></table>
-  </section>
+  <div class="cols">
+    <div class="panel">
+      <div class="ph"><h2>Accuracy por estación</h2><span class="hint">las 12 evaluadas</span></div>
+      <table><thead><tr><th>Estación</th><th class="num">Accuracy</th><th style="width:32%"></th></tr></thead>
+        <tbody>${estaciones.map((e) => `<tr>
+          <td><b>${esc(e.station_id)}</b> <span class="dim">${esc((e.nombre || "").slice(0, 24))}</span></td>
+          <td class="num">${num(e.accuracy)}</td>
+          <td><div class="track"><div class="fill" style="width:${(e.accuracy / tope * 100).toFixed(1)}%"></div></div></td>
+        </tr>`).join("")}</tbody></table>
+    </div>
 
-  ${a ? `<section><h2>Leaderboard</h2><table><thead><tr><th>Ventana</th><th class="right">Puesto</th>
-    <th class="right">Accuracy</th><th class="right">Cobertura</th><th class="right">Mejor de la cohorte</th></tr></thead>
-    <tbody>
-      <tr><td>Acumulada</td><td class="right mono">#${a.puesto ?? "—"} <span class="muted">de ${a.participantes}</span></td>
-        <td class="right mono">${fmt(a.accuracy)}</td><td class="right mono">${pct(a.cobertura)}</td>
-        <td class="right mono muted">${fmt(a.mejor_accuracy)}</td></tr>
-      ${r ? `<tr><td>Últimas 24 h</td><td class="right mono">#${r.puesto ?? "—"} <span class="muted">de ${r.participantes}</span></td>
-        <td class="right mono">${fmt(r.accuracy)}</td><td class="right mono">${pct(r.cobertura)}</td>
-        <td class="right mono muted">${fmt(r.mejor_accuracy)}</td></tr>` : ""}
-    </tbody></table></section>` : ""}
+    <div class="panel">
+      <div class="ph"><h2>Drift de nivel</h2>
+        <span class="hint">${activos ? activos + " con señal activa" : "ninguna señal activa"}</span></div>
+      <table><thead><tr><th>Estación</th><th class="num">Desplaz.</th><th class="num">Umbral</th><th class="num">Racha</th></tr></thead>
+        <tbody>${drift.map((x) => {
+          const rel = Math.abs(x.desplazamiento) / (x.umbral || 1);
+          const e = x.activo ? "bad" : rel > 0.7 ? "warn" : "ok";
+          return `<tr><td><span class="pill ${e}"><span class="dot"></span></span> ${esc(x.station_id)}</td>
+            <td class="num">${num(x.desplazamiento, 3)}</td>
+            <td class="num dim">${num(x.umbral, 2)}</td>
+            <td class="num dim">${x.racha ?? 0}</td></tr>`;
+        }).join("")}</tbody></table>
+      <div class="legend"><span>Umbral propio de cada estación, calibrado con su ruido histórico.</span></div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <div class="ph"><h2>Estado operativo</h2><span class="hint">últimas ejecuciones</span></div>
+      <table><tbody>
+        ${filaOps("Recolección de datos", ops.ultima_ingesta, 60)}
+        ${filaOps("Entrega aceptada", ops.ultima_entrega, 90)}
+        ${filaOps("Monitoreo", ops.ultimo_monitoreo, 60)}
+        ${filaOps("Entrenamiento", ops.ultimo_entrenamiento, 1440)}
+        <tr><td>Errores en 24 h</td><td class="num dim">—</td>
+          <td class="num"><span class="pill ${ops.errores_24h ? "bad" : "ok"}"><span class="dot"></span>${ops.errores_24h ?? 0}</span></td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="panel">
+      <div class="ph"><h2>Modelo en producción</h2><span class="hint">champion</span></div>
+      <table><tbody>
+        <tr><td>Versión</td><td class="num">${esc(m.version || "—")}</td></tr>
+        <tr><td>Accuracy de validación</td><td class="num">${num(m.accuracy_validacion)} %</td></tr>
+        <tr><td>Baseline (perfil puro)</td><td class="num dim">${num(m.baseline_validacion)} %</td></tr>
+        <tr><td>Datos hasta</td><td class="num dim">${m.datos_hasta ? hora(m.datos_hasta) : "—"}</td></tr>
+        <tr><td>Commit</td><td class="num dim">${esc(m.commit || "—")}</td></tr>
+      </tbody></table>
+      <div class="ph" style="margin-top:20px"><h2>Decisiones recientes</h2></div>
+      <table><tbody>${(d.decisiones || []).slice(0, 4).map((x) => {
+        const e = x.decision === "retrain" ? "warn" : x.decision === "investigate" ? "bad" : "ok";
+        return `<tr><td><span class="pill ${e}"><span class="dot"></span>${esc(x.decision)}</span></td>
+          <td class="dim" style="font-size:12.5px">${esc((x.razon || "").slice(0, 52))}</td>
+          <td class="num dim" style="white-space:nowrap">${hace(x.cuando)}</td></tr>`;
+      }).join("") || '<tr><td class="empty">Sin decisiones registradas</td></tr>'}</tbody></table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ph"><h2>Historial de versiones</h2>
+      <span class="hint">una versión solo reemplaza al champion si lo supera en validación temporal</span></div>
+    <table><thead><tr><th>Versión</th><th>Estado</th><th class="num">Validación</th><th>Motivo</th></tr></thead>
+      <tbody>${(d.versiones || []).map((v) => {
+        const e = v.estado === "champion" ? "ok" : v.estado === "rejected" ? "bad" : "mute";
+        return `<tr><td style="font-size:12.5px">${esc(v.version)}</td>
+          <td><span class="pill ${e}"><span class="dot"></span>${esc(v.estado)}</span></td>
+          <td class="num">${num(v.accuracy)} %</td>
+          <td class="dim" style="font-size:12.5px">${esc((v.razon || "").slice(0, 58))}</td></tr>`;
+      }).join("")}</tbody></table>
+  </div>
+
+  ${a || r ? `<div class="panel">
+    <div class="ph"><h2>Leaderboard</h2><span class="hint">nuestra posición; sin nombres de terceros</span></div>
+    <table><thead><tr><th>Ventana</th><th class="num">Puesto</th><th class="num">Accuracy</th>
+      <th class="num">Cobertura</th><th class="num">Mejor de la cohorte</th></tr></thead><tbody>
+      ${[["Acumulada", a], ["Últimas 24 h", r]].filter(([, w]) => w).map(([t, w]) => `<tr>
+        <td>${t}</td><td class="num"><b>#${w.puesto ?? "—"}</b> <span class="dim">de ${w.participantes}</span></td>
+        <td class="num">${num(w.accuracy)} %</td><td class="num">${pc(w.cobertura)}</td>
+        <td class="num dim">${num(w.mejor_accuracy)} %</td></tr>`).join("")}
+    </tbody></table></div>` : ""}
   `;
-  $("#app").innerHTML = app;
+
+  activarTooltip("c-acc", d.serie_accuracy || [],
+    (p) => `<span class="t">${hora(p.hora)}</span><b>${num(p.accuracy)} %</b> de accuracy`);
+  activarTooltip("c-rank", d.historial_puesto || [],
+    (p) => `<span class="t">${hora(p.cuando)}</span><b>puesto #${p.puesto}</b> · ${num(p.accuracy)} %`);
 }
 
-// La clave publicable está pensada para ir en el navegador: solo puede ejecutar
-// dashboard_public(), que devuelve datos agregados. Las tablas siguen protegidas con RLS.
-const SUPABASE = "https://tjqrgdzvhfxfovmwgzgv.supabase.co";
-const PUBLICABLE = "sb_publishable_axm56d948_AypTU8SbqKnA_S9vV7r9K";
+/* ------------------------------------------------------------------ carga */
+async function cargar() {
+  try {
+    const res = await fetch(`${SUPABASE}/rest/v1/rpc/dashboard_public`, {
+      method: "POST",
+      headers: { apikey: PUBLICABLE, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!res.ok) throw new Error(`La base respondió ${res.status}`);
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    render(d);
+  } catch (e) {
+    $("#liveTxt").textContent = "sin conexión";
+    $("#app").innerHTML = `<div class="panel"><div class="empty">
+      No se pudo cargar el estado.<br><span style="font-size:12px">${esc(e.message)}</span></div></div>`;
+  }
+}
 
-fetch(`${SUPABASE}/rest/v1/rpc/dashboard_public`, {
-  method: "POST",
-  headers: { apikey: PUBLICABLE, "Content-Type": "application/json" },
-  body: "{}",
-})
-  .then((r) => r.json())
-  .then((d) => { if (d.error) throw new Error(d.error); render(d); })
-  .catch((e) => {
-    $("#sub").textContent = "No se pudo cargar el estado";
-    $("#app").innerHTML = `<section><div class="muted">${e.message}</div></section>`;
-  });
+$("#refresh").addEventListener("click", cargar);
+cargar();
+setInterval(cargar, REFRESCO_MS);
 </script>
 </body>
 </html>
