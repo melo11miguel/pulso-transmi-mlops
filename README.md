@@ -72,9 +72,22 @@ Detalle y límites honestos: [`reports/eda.md`](reports/eda.md) ·
    datos nuevos suficientes, enfriamiento, y **primero se corrige la operación** antes de culpar al
    modelo. Los umbrales se calibraron con el estrés de drift (y una falsa alarma real llevó a umbrales
    de nivel propios de cada estación).
-7. **Fallar a la vista**: cualquier error relanza la excepción y el workflow falla; además queda
+7. **Llave de idempotencia por contenido** (guía operativa v2.0): se deriva de `cycle_id`, versión
+   del modelo y las 48 predicciones, no de `GITHUB_RUN_ID`. Así, dos ejecuciones que entregan lo
+   mismo reciben el mismo recibo (HTTP 200) en vez de gastar dos de los tres intentos del ciclo.
+8. **Sesión larga en vez de job liviano** (única divergencia deliberada de la guía). La guía
+   recomienda un workflow liviano (`timeout-minutes: 8`) despertando cada 10 min. Medimos que
+   GitHub **descarta la mayoría de las ejecuciones programadas**: con cron horario corrieron 6 de
+   ~31, y hubo un hueco de **5 h 16 min sin ningún disparo** (19:03 → 00:19 UTC del 22-09), con
+   Actions reportado como *operational*. Como la ventana dura 25 min, eso costaba la mayoría de los
+   ciclos. La solución: el cron sigue en `*/10` y admite ejecución manual, pero el job **espera
+   dentro de la ventana y cubre 4 horas**, entregando cada ciclo que abra. `concurrency` mantiene
+   uno vivo y otro en cola para relevarlo. Evidencia de que funciona: el ciclo de las 00:34 lo
+   capturó una ejecución programada que arrancó a las 00:19 y esperó 16 sondeos; y la cobertura
+   rolling 24 h pasó de 0,17 a 0,79 en doce horas.
+9. **Fallar a la vista**: cualquier error relanza la excepción y el workflow falla; además queda
    registrado en `pipeline_runs`/`ingestion_runs`.
-8. **Seguridad**: RLS activado sin políticas y sin permisos para `anon`/`authenticated`; solo la
+10. **Seguridad**: RLS activado sin políticas y sin permisos para `anon`/`authenticated`; solo la
    service role (Secrets de Actions) escribe. Ninguna clave se imprime ni se guarda en la base.
 
 ## Estructura
@@ -85,7 +98,7 @@ src/pulso/       api · supa · ingest · features · model · baselines · back
 supabase/migrations/   esquema SQL reproducible (0001-0003)
 scripts/         download_data.py · eda.py · run_backtests.py · drift_stress.py · practice_submit.py
 reports/         análisis exploratorio, backtesting y estrés de drift (con figuras)
-tests/           144 pruebas (sin red: API y Supabase simulados)
+tests/           165 pruebas (sin red: API y Supabase simulados)
 .github/workflows/  ci · collect-and-predict · collect-and-monitor · train
 docs/runbook.md  puesta en marcha, operación y diagnóstico
 ```
@@ -100,7 +113,7 @@ champion inicial y definir la variable `PIPELINE_ENABLED=true` para activar los 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 python -m pip install -r requirements.txt && python -m pip install -e '.[eda,dev]'
-pytest                                   # 144 pruebas, sin red
+pytest                                   # 165 pruebas, sin red
 python scripts/download_data.py          # baja el corte inicial a data/ (hash verificado)
 python scripts/eda.py                    # regenera reports/eda.md
 python scripts/run_backtests.py          # regenera reports/backtest.md (varios minutos)

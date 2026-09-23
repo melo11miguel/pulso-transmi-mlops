@@ -554,16 +554,22 @@ def test_inference_marks_missed_when_api_says_cycle_closed(world):
     assert db.tables["forecast_cycles"][0]["outcome"] == "missed"
 
 
-def test_inference_retry_after_failure_uses_a_fresh_row_and_can_succeed(world, monkeypatch):
+def test_inference_retry_after_a_rejection_reuses_the_same_row_and_key(world, monkeypatch):
+    """Tras un rechazo, reintentar el MISMO contenido reutiliza fila y llave (no gasta otro intento)."""
     db, registry, server, api, now, _ = world
-    server.fail_with = [httpx.Response(200, json=server.cycle), httpx.Response(422, json={"detail": {"code": "x"}})]
+    server.fail_with = [httpx.Response(200, json=server.cycle),
+                        httpx.Response(422, json={"detail": {"code": "x"}})]
     with pytest.raises(PulsoApiError):
         run_inference(api, db, registry, now=now)
-    monkeypatch.setenv("GITHUB_RUN_ID", "999")  # otra ejecución -> otra llave
+    assert db.tables["submissions"][0]["status"] == "rejected"
+
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")  # otra ejecución, mismo contenido
     result = run_inference(api, db, registry, now=now)
+
     assert result["status"] == "submitted"
-    statuses = [s["status"] for s in db.tables["submissions"]]
-    assert statuses == ["rejected", "accepted"]
+    assert [s["status"] for s in db.tables["submissions"]] == ["accepted"]  # una sola fila
+    posts = [c for c in server.calls if c.method == "POST"]
+    assert len({c.headers["idempotency-key"] for c in posts}) == 1
 
 
 def test_inference_refuses_a_champion_trained_after_the_cutoff(world):
@@ -984,3 +990,52 @@ def test_session_gives_up_after_too_many_consecutive_errors(world):
         run_session(api, db, registry, duration_seconds=3600, poll_seconds=60,
                     max_consecutive_errors=3, sleep=clock.sleep, clock=clock.now,
                     now_fn=lambda: now)
+
+
+# ------------------------------------------------------------------ llave de idempotencia estable
+from pulso.predict import idempotency_key  # noqa: E402
+
+
+def _preds(values=(1.0, 2.0)):
+    return pd.DataFrame([{"station_id": "02300", "target_at": "2026-09-10T11:15:00Z",
+                          "value": values[0]},
+                         {"station_id": "03000", "target_at": "2026-09-10T11:15:00Z",
+                          "value": values[1]}])
+
+
+def test_idempotency_key_depends_on_content_not_on_the_run(monkeypatch):
+    """La guía operativa exige la misma llave para el mismo ciclo, modelo y contenido."""
+    monkeypatch.setenv("GITHUB_RUN_ID", "111")
+    a = idempotency_key("cyc_1", "gbm-v1", _preds())
+    monkeypatch.setenv("GITHUB_RUN_ID", "222")  # otra ejecución, mismo contenido
+    b = idempotency_key("cyc_1", "gbm-v1", _preds())
+    assert a == b and 8 <= len(a) <= 128
+
+
+@pytest.mark.parametrize("cycle, version, values", [
+    ("cyc_2", "gbm-v1", (1.0, 2.0)),   # otro ciclo
+    ("cyc_1", "gbm-v2", (1.0, 2.0)),   # otro modelo
+    ("cyc_1", "gbm-v1", (1.0, 9.0)),   # otros valores
+])
+def test_idempotency_key_changes_when_the_delivery_changes(cycle, version, values):
+    base = idempotency_key("cyc_1", "gbm-v1", _preds())
+    assert idempotency_key(cycle, version, _preds(values)) != base
+
+
+def test_repeating_an_identical_delivery_reuses_the_row_and_the_receipt(world, monkeypatch):
+    """Dos ejecuciones distintas con el mismo contenido: un solo intento, mismo recibo."""
+    db, registry, server, api, now, _ = world
+    run_inference(api, db, registry, now=now)
+    first = dict(db.tables["submissions"][0])
+
+    # simula otra ejecución de Actions que reintenta el mismo ciclo ya entregado
+    db.tables["submissions"][0]["status"] = "pending"  # como si el recibo no se hubiera guardado
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")
+    result = run_inference(api, db, registry, now=now)
+
+    assert result["status"] == "submitted"
+    assert len(db.tables["submissions"]) == 1  # no se creó una segunda fila
+    assert db.tables["submissions"][0]["idempotency_key"] == first["idempotency_key"]
+    assert db.tables["submissions"][0]["submission_id"] == first["submission_id"]
+    posts = [c for c in server.calls if c.method == "POST"]
+    assert len({c.headers["idempotency-key"] for c in posts}) == 1  # misma llave en ambos POST

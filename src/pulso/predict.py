@@ -141,12 +141,18 @@ def payload_hash(payload: dict[str, Any]) -> str:
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def idempotency_key(cycle_id: str) -> str:
-    """Estable dentro de una ejecución de Actions; distinta entre ejecuciones y ciclos."""
-    run_id, attempt = os.getenv("GITHUB_RUN_ID"), os.getenv("GITHUB_RUN_ATTEMPT", "1")
-    if run_id:
-        return f"gha-{run_id}-{attempt}-{cycle_id}"[:128]
-    return f"manual-{datetime.now(UTC):%Y%m%dT%H%M%S}-{cycle_id}"[:128]
+def idempotency_key(cycle_id: str, model_version: str, predictions: pd.DataFrame) -> str:
+    """Estable para el mismo ciclo, modelo y contenido (guía operativa v2.0).
+
+    Antes dependía de GITHUB_RUN_ID, así que dos ejecuciones que entregaban lo MISMO creaban dos
+    intentos válidos (gastando 2 de los 3 del ciclo) en vez de recibir el mismo recibo. Derivarla
+    del contenido hace que un reintento —aunque sea de otra ejecución— devuelva 200 con el recibo
+    original. Si cambia el modelo o cambian los valores, la llave cambia: es una entrega distinta.
+    """
+    body = json.dumps([[r.station_id, r.target_at, r.value] for r in predictions.itertuples()],
+                      sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(body.encode()).hexdigest()[:16]
+    return f"ptm-{cycle_id}-{model_version}-{digest}"[:128]
 
 
 def client_run_id(now: datetime) -> str:
@@ -211,13 +217,22 @@ def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
     if dry_run:
         return {"status": "dry_run", **summary}
 
-    key = idempotency_key(cycle_id)
-    row = db.insert("submissions", {
-        "cycle_id": cycle_id, "client_run_id": payload["client_run_id"], "idempotency_key": key,
+    key = idempotency_key(cycle_id, champion_row["version"], predictions)
+    fields = {
+        "cycle_id": cycle_id, "client_run_id": payload["client_run_id"],
         "model_version": champion_row["version"], "status": "pending",
         "payload_hash": summary["payload_hash"], "github_run_id": os.getenv("GITHUB_RUN_ID"),
-        "git_commit": payload["model"].get("git_commit"),
-    })
+        "git_commit": payload["model"].get("git_commit"), "updated_at": _now(),
+    }
+    # La llave es única en la base: si este contenido ya se intentó antes (p. ej. una ejecución que
+    # murió tras el POST), se reutiliza esa fila en vez de duplicarla.
+    previous_row = db.select("submissions", columns="id",
+                             filters={"idempotency_key": f"eq.{key}"})
+    if previous_row:
+        row = previous_row[0]
+        db.update("submissions", fields, {"id": f"eq.{row['id']}"})
+    else:
+        row = db.insert("submissions", {"idempotency_key": key, **fields})
     db.upsert("predictions", [
         {"submission_row_id": row["id"], "cycle_id": cycle_id, "station_id": r.station_id,
          "target_at": r.target_at, "horizon_minutes": int(r.horizon_minutes), "value": r.value}
