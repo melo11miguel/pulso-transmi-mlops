@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulso TransMi · Estado del pipeline</title>
+<style>
+  :root{
+    color-scheme: light;
+    --surface:#fcfcfb; --panel:#ffffff; --line:#e4e3df;
+    --ink:#0b0b0b; --ink2:#52514e; --ink3:#86847e;
+    --blue:#2a78d6; --orange:#eb6834; --aqua:#1baf7a; --red:#e34948; --gray:#a9a8a2;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --surface:#1a1a19; --panel:#232322; --line:#383835;
+      --ink:#ffffff; --ink2:#c3c2b7; --ink3:#8d8b83;
+      --blue:#3987e5; --orange:#d95926; --aqua:#199e70; --red:#e66767; --gray:#6f6e69;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--surface);color:var(--ink);
+       font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 16px 64px}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content:space-between;
+         border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px}
+  h1{font-size:22px;margin:0;letter-spacing:-.01em}
+  h2{font-size:15px;margin:0 0 14px;letter-spacing:.02em;text-transform:uppercase;color:var(--ink2)}
+  .sub{color:var(--ink2);font-size:13px}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));margin-bottom:26px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .k{font-size:12px;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+  .v{font-size:30px;font-weight:650;letter-spacing:-.02em;line-height:1.1}
+  .u{font-size:15px;font-weight:500;color:var(--ink2)}
+  .note{font-size:12.5px;color:var(--ink3);margin-top:6px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+          padding:18px 20px;margin-bottom:18px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;font-weight:600;color:var(--ink2);font-size:12px;text-transform:uppercase;
+     letter-spacing:.03em;padding:0 10px 8px 0;border-bottom:1px solid var(--line)}
+  td{padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  .bar{height:9px;border-radius:5px;background:var(--blue);min-width:3px}
+  .track{background:var(--line);border-radius:5px;height:9px;width:100%}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
+  .ok{background:var(--aqua)} .warn{background:var(--orange)} .bad{background:var(--red)}
+  .muted{color:var(--ink2)}
+  .right{text-align:right}
+  .mono{font-variant-numeric:tabular-nums}
+  .cols{display:grid;gap:18px;grid-template-columns:1fr 1fr}
+  @media (max-width:760px){.cols{grid-template-columns:1fr}}
+  .legend{font-size:12.5px;color:var(--ink2);margin-top:10px}
+  .legend span{margin-right:16px}
+  .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;
+        padding:2px 9px;font-size:12px;color:var(--ink2)}
+  footer{color:var(--ink3);font-size:12.5px;margin-top:28px;text-align:center}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Pulso TransMi · estado del pipeline</h1>
+      <div class="sub" id="sub">Cargando…</div>
+    </div>
+    <div class="sub" id="stamp"></div>
+  </header>
+  <div id="app"></div>
+  <footer>
+    Datos leídos en el servidor desde Supabase y la API de Pulso TransMi. Ninguna credencial llega al
+    navegador. Se omiten los nombres de otros participantes.
+  </footer>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? "—" : Number(v).toFixed(d));
+const pct = (v) => (v === null || v === undefined ? "—" : (v * 100).toFixed(0) + " %");
+
+function hace(iso) {
+  if (!iso) return "—";
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (min < 1) return "hace segundos";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `hace ${h} h ${min % 60} min` : `hace ${Math.floor(h / 24)} d`;
+}
+
+function card(k, v, u, note, color) {
+  return `<div class="card"><div class="k">${k}</div>
+    <div class="v" ${color ? `style="color:${color}"` : ""}>${v}<span class="u">${u || ""}</span></div>
+    ${note ? `<div class="note">${note}</div>` : ""}</div>`;
+}
+
+function serie(puntos) {
+  if (!puntos || puntos.length < 2) return '<div class="muted">Aún no hay suficientes ciclos evaluados.</div>';
+  const W = 820, H = 190, P = { l: 38, r: 12, t: 12, b: 24 };
+  const ys = puntos.map((p) => p.accuracy);
+  const lo = Math.max(0, Math.floor(Math.min(...ys) - 3)), hi = Math.min(100, Math.ceil(Math.max(...ys) + 3));
+  const x = (i) => P.l + (i * (W - P.l - P.r)) / (puntos.length - 1);
+  const y = (v) => P.t + (1 - (v - lo) / (hi - lo || 1)) * (H - P.t - P.b);
+  const d = puntos.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.accuracy).toFixed(1)}`).join("");
+  const ticks = [lo, Math.round((lo + hi) / 2), hi].map(
+    (v) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>
+            <text x="4" y="${y(v) + 4}" fill="var(--ink3)" font-size="11">${v}</text>`).join("");
+  const pts = puntos.map((p, i) =>
+    `<circle cx="${x(i).toFixed(1)}" cy="${y(p.accuracy).toFixed(1)}" r="3" fill="var(--blue)"
+      stroke="var(--panel)" stroke-width="1.5"><title>${new Date(p.hora).toLocaleString("es-CO")} · ${fmt(p.accuracy)} %</title></circle>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
+     aria-label="Accuracy por hora, de ${fmt(ys[0])} a ${fmt(ys[ys.length - 1])} por ciento">
+     ${ticks}<path d="${d}" fill="none" stroke="var(--blue)" stroke-width="2"
+     stroke-linejoin="round"/>${pts}</svg>
+     <div class="legend"><span>Accuracy oficial por hora objetivo · ${puntos.length} puntos</span></div>`;
+}
+
+function filas(items, max, render) {
+  return items.slice(0, max).map(render).join("");
+}
+
+function render(d) {
+  const lb = d.leaderboard || {};
+  const r = lb.rolling, a = lb.acumulada;
+  const ops = d.operacion || {};
+  const ciclos = d.ciclos || {};
+  const m = d.modelo || {};
+  const perdidos = ciclos.perdidos || 0;
+  const drift = (d.drift || []).filter((x) => x.desplazamiento !== null);
+  const activos = drift.filter((x) => x.activo).length;
+
+  $("#sub").innerHTML = `Modelo <span class="chip">${m.version || "—"}</span>
+    · ${ciclos.entregados || 0} de ${ciclos.vistos || 0} ciclos entregados`;
+  $("#stamp").textContent = "Actualizado " + hace(d.generated_at);
+
+  const cards = [
+    card("Accuracy real", fmt(d.accuracy_global), " %", `${d.targets_evaluados || 0} targets ya evaluados`),
+    card("Puesto · 24 h", r && r.puesto ? "#" + r.puesto : "—", r ? ` de ${r.participantes}` : "",
+         r ? `${fmt(r.accuracy)} % · mejor de la cohorte ${fmt(r.mejor_accuracy)} %` : "sin leaderboard"),
+    card("Cobertura · 24 h", r ? pct(r.cobertura) : "—", "",
+         r ? `mejor de la cohorte ${pct(r.mejor_cobertura)}` : ""),
+    card("Ciclos perdidos", perdidos, "", perdidos ? "revisar el pipeline" : "ninguno desde el inicio",
+         perdidos ? "var(--red)" : "var(--aqua)"),
+  ].join("");
+
+  const estaciones = (d.por_estacion || []).slice().sort((x, y) => y.accuracy - x.accuracy);
+  const maxAcc = Math.max(...estaciones.map((e) => e.accuracy), 1);
+
+  const app = `
+  <div class="grid">${cards}</div>
+
+  <section>
+    <h2>Accuracy a lo largo del tiempo</h2>
+    ${serie(d.serie_accuracy)}
+  </section>
+
+  <div class="cols">
+    <section>
+      <h2>Por estación</h2>
+      <table><thead><tr><th>Estación</th><th class="right">Accuracy</th><th style="width:34%"></th></tr></thead>
+      <tbody>${filas(estaciones, 12, (e) => `<tr>
+        <td>${e.station_id} <span class="muted">${(e.nombre || "").slice(0, 22)}</span></td>
+        <td class="right mono">${fmt(e.accuracy)}</td>
+        <td><div class="track"><div class="bar" style="width:${(e.accuracy / maxAcc * 100).toFixed(1)}%"></div></div></td>
+      </tr>`)}</tbody></table>
+    </section>
+
+    <section>
+      <h2>Por horizonte</h2>
+      <table><thead><tr><th>Horizonte</th><th class="right">Accuracy</th><th class="right">Targets</th></tr></thead>
+      <tbody>${filas(d.por_horizonte || [], 4, (h) => `<tr>
+        <td>+${h.horizonte} min</td><td class="right mono">${fmt(h.accuracy)}</td>
+        <td class="right mono muted">${h.n}</td></tr>`)}</tbody></table>
+
+      <h2 style="margin-top:22px">Estado operativo</h2>
+      <table><tbody>
+        <tr><td>Último dato recolectado</td><td class="right muted">${hace(ops.ultima_ingesta)}</td></tr>
+        <tr><td>Última entrega aceptada</td><td class="right muted">${hace(ops.ultima_entrega)}</td></tr>
+        <tr><td>Último monitoreo</td><td class="right muted">${hace(ops.ultimo_monitoreo)}</td></tr>
+        <tr><td>Último entrenamiento</td><td class="right muted">${hace(ops.ultimo_entrenamiento)}</td></tr>
+        <tr><td>Errores en 24 h</td><td class="right mono">
+          <span class="dot ${ops.errores_24h ? "bad" : "ok"}"></span>${ops.errores_24h ?? "—"}</td></tr>
+      </tbody></table>
+    </section>
+  </div>
+
+  <div class="cols">
+    <section>
+      <h2>Drift de nivel por estación</h2>
+      <table><thead><tr><th>Estación</th><th class="right">Desplaz.</th><th class="right">Umbral</th>
+        <th class="right">Racha</th></tr></thead>
+      <tbody>${filas(drift, 12, (x) => `<tr>
+        <td><span class="dot ${x.activo ? "bad" : Math.abs(x.desplazamiento) > x.umbral * 0.7 ? "warn" : "ok"}"></span>${x.station_id}</td>
+        <td class="right mono">${fmt(x.desplazamiento, 3)}</td>
+        <td class="right mono muted">${fmt(x.umbral, 2)}</td>
+        <td class="right mono muted">${x.racha ?? 0}</td></tr>`)}</tbody></table>
+      <div class="legend"><span>Umbral propio de cada estación, calibrado con su ruido histórico.
+        ${activos ? activos + " con señal activa." : "Ninguna señal activa."}</span></div>
+    </section>
+
+    <section>
+      <h2>Modelo y decisiones</h2>
+      <table><tbody>
+        <tr><td>Champion</td><td class="right mono">${m.version || "—"}</td></tr>
+        <tr><td>Accuracy de validación</td><td class="right mono">${fmt(m.accuracy_validacion)} %</td></tr>
+        <tr><td>Baseline (perfil puro)</td><td class="right mono muted">${fmt(m.baseline_validacion)} %</td></tr>
+        <tr><td>Datos hasta</td><td class="right muted">${m.datos_hasta ? new Date(m.datos_hasta).toLocaleString("es-CO") : "—"}</td></tr>
+        <tr><td>Commit</td><td class="right mono muted">${m.commit || "—"}</td></tr>
+      </tbody></table>
+      <h2 style="margin-top:22px">Últimas decisiones</h2>
+      <table><tbody>${filas(d.decisiones || [], 5, (x) => `<tr>
+        <td><span class="dot ${x.decision === "retrain" ? "warn" : x.decision === "investigate" ? "bad" : "ok"}"></span>${x.decision}</td>
+        <td class="muted" style="font-size:12.5px">${(x.razon || "").slice(0, 64)}</td>
+        <td class="right muted" style="white-space:nowrap">${hace(x.cuando)}</td></tr>`)}</tbody></table>
+    </section>
+  </div>
+
+  <section>
+    <h2>Versiones del modelo</h2>
+    <table><thead><tr><th>Versión</th><th>Estado</th><th class="right">Validación</th><th>Razón</th></tr></thead>
+    <tbody>${filas(d.versiones || [], 8, (v) => `<tr>
+      <td class="mono" style="font-size:12.5px">${v.version}</td>
+      <td><span class="dot ${v.estado === "champion" ? "ok" : v.estado === "rejected" ? "bad" : "warn"}"></span>${v.estado}</td>
+      <td class="right mono">${fmt(v.accuracy)}</td>
+      <td class="muted" style="font-size:12.5px">${(v.razon || "").slice(0, 70)}</td></tr>`)}</tbody></table>
+  </section>
+
+  ${a ? `<section><h2>Leaderboard</h2><table><thead><tr><th>Ventana</th><th class="right">Puesto</th>
+    <th class="right">Accuracy</th><th class="right">Cobertura</th><th class="right">Mejor de la cohorte</th></tr></thead>
+    <tbody>
+      <tr><td>Acumulada</td><td class="right mono">#${a.puesto ?? "—"} <span class="muted">de ${a.participantes}</span></td>
+        <td class="right mono">${fmt(a.accuracy)}</td><td class="right mono">${pct(a.cobertura)}</td>
+        <td class="right mono muted">${fmt(a.mejor_accuracy)}</td></tr>
+      ${r ? `<tr><td>Últimas 24 h</td><td class="right mono">#${r.puesto ?? "—"} <span class="muted">de ${r.participantes}</span></td>
+        <td class="right mono">${fmt(r.accuracy)}</td><td class="right mono">${pct(r.cobertura)}</td>
+        <td class="right mono muted">${fmt(r.mejor_accuracy)}</td></tr>` : ""}
+    </tbody></table></section>` : ""}
+  `;
+  $("#app").innerHTML = app;
+}
+
+fetch("/api/state")
+  .then((r) => r.json())
+  .then((d) => { if (d.error) throw new Error(d.error); render(d); })
+  .catch((e) => {
+    $("#sub").textContent = "No se pudo cargar el estado";
+    $("#app").innerHTML = `<section><div class="muted">${e.message}</div></section>`;
+  });
+</script>
+</body>
+</html>
