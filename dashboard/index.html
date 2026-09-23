@@ -568,10 +568,16 @@ function cargarTres() {
   if (window.THREE) return Promise.resolve(window.THREE);
   return new Promise((ok, mal) => {
     const s = document.createElement("script");
+    // Sin este corte, un CDN caído deja el panel diciendo "Preparando el mapa" para siempre y el
+    // que abra la página no sabe si debe esperar o si algo se rompió.
+    const corte = setTimeout(() => mal(new Error("three.js tardó demasiado en llegar desde el CDN")), 20000);
     s.src = TRES_URL;
     s.async = true;
-    s.onload = () => (window.THREE ? ok(window.THREE) : mal(new Error("three.js no se inicializó")));
-    s.onerror = () => mal(new Error("no se pudo descargar three.js"));
+    s.onload = () => {
+      clearTimeout(corte);
+      if (window.THREE) ok(window.THREE); else mal(new Error("three.js no se inicializó"));
+    };
+    s.onerror = () => { clearTimeout(corte); mal(new Error("no se pudo descargar three.js")); };
     document.head.appendChild(s);
   });
 }
@@ -608,7 +614,13 @@ async function mapa3d() {
     THREE = lib;
     if (!datos || !datos.estaciones || !datos.perfil) throw new Error("respuesta vacía");
   } catch (e) { fallo(e.message); return; }
-  if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* da igual */ } }
+  // Se espera a la tipografía para que los nombres salgan en Inter y no en la de respaldo,
+  // pero sin quedarse colgado si tarda: pasados dos segundos se dibuja con lo que haya.
+  if (document.fonts && document.fonts.ready) {
+    try {
+      await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2000))]);
+    } catch (e) { /* la fuente de respaldo sirve */ }
+  }
 
   const est = datos.estaciones;
   const perfil = datos.perfil;
