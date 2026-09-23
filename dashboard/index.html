@@ -68,7 +68,15 @@
   .big small{font-size:14px;font-weight:500;color:var(--ink2);letter-spacing:0}
   .foot{font-size:12.5px;color:var(--ink3);margin-top:8px;display:flex;align-items:center;gap:7px}
   .panel{padding:20px 22px;margin-bottom:18px}
-  .ph{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:4px}
+  .ph{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
+      gap:4px 14px;margin-bottom:4px}
+  @media (max-width:560px){.ph .hint{flex-basis:100%}}
+  /* En pantallas angostas el ancho mínimo de las tablas estiraba el documento entero y todos
+     los paneles quedaban cortados. Cada tabla se desplaza sola en lugar de romper la página. */
+  @media (max-width:640px){
+    .panel table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    h1{white-space:normal}
+  }
   h2{font-size:14.5px;font-weight:600;margin:0;letter-spacing:-.005em}
   .hint{font-size:12.5px;color:var(--ink3)}
   .cols{display:grid;gap:18px;grid-template-columns:1.15fr 1fr}
@@ -111,6 +119,43 @@
             vertical-align:3px}
   .legend .ref{height:0;border-top:2px dashed var(--ink3);width:18px}
 
+  /* ---------- mapa 3D ---------- */
+  .c3d{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin:15px 0 13px}
+  .grupo{display:inline-flex;border:1px solid var(--line-2);border-radius:9px;overflow:hidden}
+  .seg{border:0;background:var(--panel);color:var(--ink2);font:inherit;font-size:12.5px;
+       padding:6px 12px;cursor:pointer;border-right:1px solid var(--line);white-space:nowrap}
+  .seg:last-child{border-right:0}
+  .seg:hover{color:var(--ink);background:var(--panel-2)}
+  .seg.on{background:var(--ink);color:var(--surface);font-weight:500}
+  .slider{flex:1 1 170px;min-width:140px;display:flex;align-items:center}
+  .slider input{width:100%;accent-color:var(--blue);cursor:pointer}
+  .reloj{font-size:16px;font-weight:650;letter-spacing:-.02em;min-width:50px;text-align:right}
+  .lienzo{position:relative;height:460px;border-radius:12px;overflow:hidden;
+          border:1px solid var(--line);touch-action:pan-y;
+          background:radial-gradient(125% 95% at 50% 0%,var(--panel-2),var(--panel) 72%)}
+  @media (max-width:640px){.lienzo{height:330px}}
+  .lienzo canvas{display:block;width:100%;height:100%;cursor:grab;outline:none}
+  .lienzo canvas:active{cursor:grabbing}
+  .ov{position:absolute;pointer-events:none;z-index:2;font-size:12px;color:var(--ink3)}
+  .ov-tl{top:13px;left:15px;line-height:1.45}
+  .ov-tl b{display:block;font-size:20px;color:var(--ink);font-weight:650;letter-spacing:-.025em}
+  .ov-br{bottom:12px;right:12px;display:flex;gap:6px;pointer-events:auto}
+  .ov-br button{width:29px;height:29px;border-radius:7px;border:1px solid var(--line-2);
+                background:var(--panel);color:var(--ink2);font:inherit;font-size:14px;line-height:1;
+                cursor:pointer;display:grid;place-items:center}
+  .ov-br button:hover{color:var(--ink);border-color:var(--ink3)}
+  .tip3d{position:absolute;pointer-events:none;opacity:0;transition:opacity .12s;z-index:4;
+         background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:8px 11px;
+         box-shadow:var(--shadow);font-size:12.5px;white-space:nowrap}
+  .tip3d .t{color:var(--ink3);font-size:11.5px;display:block;margin-bottom:2px}
+  .aviso{position:absolute;inset:0;display:grid;place-items:center;z-index:5;pointer-events:none;
+         opacity:0;transition:opacity .2s;font-size:13.5px;color:#fff;
+         background:color-mix(in srgb,#0c0c0b 42%,transparent)}
+  .cargando{position:absolute;inset:0;display:grid;place-items:center;z-index:3;
+            background:var(--panel);color:var(--ink3);font-size:13px;transition:opacity .3s}
+  .rampa{display:inline-block;width:88px;height:8px;border-radius:99px;margin-right:7px;
+         vertical-align:0}
+
   /* ---------- carga y vacío ---------- */
   .skel{background:linear-gradient(90deg,var(--panel-2) 25%,var(--line) 37%,var(--panel-2) 63%);
         background-size:400% 100%;animation:s 1.3s infinite;border-radius:8px}
@@ -150,6 +195,50 @@
     </div>
     <div class="panel"><div class="skel" style="height:220px"></div></div>
   </div>
+
+  <!-- El mapa 3D vive fuera de #app: ese contenedor se reescribe entero en cada refresco y
+       eso destruiría el contexto WebGL y la posición de la cámara del usuario. -->
+  <div class="panel" id="red3d">
+    <div class="ph">
+      <h2>La red en 3D · demanda a lo largo del día</h2>
+      <span class="hint" id="d3-ventana">cargando el perfil histórico…</span>
+    </div>
+
+    <div class="c3d">
+      <div class="grupo" role="group" aria-label="Tipo de día">
+        <button class="seg on" type="button" data-tipo="habil">Día hábil</button>
+        <button class="seg" type="button" data-tipo="finde">Fin de semana</button>
+      </div>
+      <div class="grupo" role="group" aria-label="Qué representa el color">
+        <button class="seg on" type="button" data-color="demanda">Color: demanda</button>
+        <button class="seg" type="button" data-color="accuracy">Color: precisión</button>
+      </div>
+      <button class="ghost" type="button" id="d3-play" aria-pressed="true">Pausar</button>
+      <label class="slider"><span class="sr">Hora del día</span>
+        <input type="range" id="d3-hora" min="0" max="47" step="1" value="14"
+               aria-label="Hora del día"></label>
+      <span class="reloj" id="d3-reloj">07:00</span>
+    </div>
+
+    <div class="lienzo" id="lienzo3d">
+      <div class="ov ov-tl" id="d3-info"></div>
+      <div class="ov ov-br">
+        <button type="button" id="d3-mas" title="Acercar" aria-label="Acercar">+</button>
+        <button type="button" id="d3-menos" title="Alejar" aria-label="Alejar">−</button>
+        <button type="button" id="d3-reset" title="Reencuadrar" aria-label="Reencuadrar">⌾</button>
+      </div>
+      <div class="tip3d" id="d3-tip"></div>
+      <div class="aviso" id="d3-aviso">Usa <b>Ctrl + rueda</b> para acercar</div>
+      <div class="cargando" id="d3-carga">Preparando el mapa…</div>
+    </div>
+
+    <div class="legend" id="d3-leyenda"></div>
+    <div class="hint" style="margin-top:8px">Arrastra para girar · Ctrl + rueda o los botones
+      para acercar · Mayús + arrastrar para desplazar · doble clic para reencuadrar.
+      Cada torre es una estación en su posición real; la altura es la demanda promedio a esa hora.</div>
+  </div>
+
+  <div id="app2"></div>
 
   <footer>
     Página estática. Consulta una función agregada de Supabase con la clave publicable, que solo
@@ -339,8 +428,11 @@ function render(d) {
       <span><i class="ref"></i>techo teórico ${TECHO} % · límite del ruido de los datos</span>
       ${r && r.mejor_accuracy ? '<span><i class="ref" style="border-color:var(--orange)"></i>mejor de la cohorte</span>' : ""}
     </div>
-  </div>
+  </div>`;
 
+  // El resto va a un segundo contenedor para que el mapa 3D quede intercalado entre ambos
+  // sin que el refresco lo toque.
+  $("#app2").innerHTML = `
   <div class="cols">
     <div class="panel">
       <div class="ph"><h2>Carrera: puesto en 24 h</h2><span class="hint">arriba es mejor</span></div>
@@ -449,6 +541,461 @@ function render(d) {
     (p) => `<span class="t">${hora(p.cuando)}</span><b>puesto #${p.puesto}</b> · ${num(p.accuracy)} %`);
 }
 
+/* ------------------------------------------------------------------ mapa 3D de la red */
+const TRES_URL = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+
+// Rampa de demanda: azul (red tranquila) → verde → ámbar → naranja → rojo (hora pico).
+const RAMPA_DEM = [[0, [42, 77, 143]], [.30, [27, 175, 122]], [.58, [237, 161, 0]],
+                   [.80, [235, 104, 52]], [1, [227, 73, 72]]];
+// Rampa de precisión: rojo (80 %) → ámbar → verde (90 %).
+const RAMPA_ACC = [[0, [227, 73, 72]], [.5, [237, 161, 0]], [1, [27, 175, 122]]];
+
+function interp(rampa, t) {
+  t = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+  for (let i = 1; i < rampa.length; i++) {
+    if (t <= rampa[i][0]) {
+      const [p0, c0] = rampa[i - 1], [p1, c1] = rampa[i];
+      const f = (t - p0) / ((p1 - p0) || 1);
+      return c0.map((v, k) => (v + (c1[k] - v) * f) / 255);
+    }
+  }
+  return rampa[rampa.length - 1][1].map((v) => v / 255);
+}
+const cssRampa = (rampa) => `linear-gradient(90deg,${rampa
+  .map(([p, c]) => `rgb(${c.join(",")}) ${(p * 100).toFixed(0)}%`).join(",")})`;
+
+function cargarTres() {
+  if (window.THREE) return Promise.resolve(window.THREE);
+  return new Promise((ok, mal) => {
+    const s = document.createElement("script");
+    s.src = TRES_URL;
+    s.async = true;
+    s.onload = () => (window.THREE ? ok(window.THREE) : mal(new Error("three.js no se inicializó")));
+    s.onerror = () => mal(new Error("no se pudo descargar three.js"));
+    document.head.appendChild(s);
+  });
+}
+
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#888";
+const oscuro = () => matchMedia("(prefers-color-scheme: dark)").matches;
+const corto = (n) => String(n || "").split(/\s+[–—-]\s+/)[0].replace(/^Portal\s+/, "P. ").trim().slice(0, 18);
+const hhmm = (slot) => {
+  const s = Math.floor(slot) % 48;
+  return `${String(Math.floor(s / 2)).padStart(2, "0")}:${s % 2 ? "30" : "00"}`;
+};
+const acotar = (v, a, b) => Math.max(a, Math.min(b, v));
+
+async function mapa3d() {
+  const caja = $("#lienzo3d"), carga = $("#d3-carga"), tip = $("#d3-tip");
+  const fallo = (msg) => {
+    carga.style.opacity = "1";
+    carga.innerHTML = `<div style="text-align:center;padding:0 24px">No se pudo dibujar el mapa 3D.
+      <br><span style="font-size:12px">${esc(msg)}</span></div>`;
+  };
+
+  let datos, THREE;
+  try {
+    const [res, lib] = await Promise.all([
+      fetch(`${SUPABASE}/rest/v1/rpc/red_3d`, {
+        method: "POST",
+        headers: { apikey: PUBLICABLE, "Content-Type": "application/json" },
+        body: "{}",
+      }),
+      cargarTres(),
+    ]);
+    if (!res.ok) throw new Error(`la base respondió ${res.status}`);
+    datos = await res.json();
+    THREE = lib;
+    if (!datos || !datos.estaciones || !datos.perfil) throw new Error("respuesta vacía");
+  } catch (e) { fallo(e.message); return; }
+  if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* da igual */ } }
+
+  const est = datos.estaciones;
+  const perfil = datos.perfil;
+  const v = datos.ventana || {};
+  $("#d3-ventana").textContent =
+    `promedio de ${v.dias || "?"} días · ${(v.observaciones || 0).toLocaleString("es-CO")} observaciones`;
+
+  /* --- de coordenadas geográficas a un plano en escala ---
+     Se convierte a kilómetros (corrigiendo la longitud por el coseno de la latitud) y luego se
+     escala todo por un mismo factor, así la forma real del corredor no se deforma. */
+  const latC = (Math.min(...est.map((e) => e.lat)) + Math.max(...est.map((e) => e.lat))) / 2;
+  const lonC = (Math.min(...est.map((e) => e.lon)) + Math.max(...est.map((e) => e.lon))) / 2;
+  const cosLat = Math.cos(latC * Math.PI / 180);
+  const crudo = est.map((e) => ({ x: (e.lon - lonC) * 111.32 * cosLat, z: -(e.lat - latC) * 111.32 }));
+  const alcance = Math.max(...crudo.map((p) => Math.hypot(p.x, p.z))) || 1;
+  const fac = 6.15 / alcance;
+  const pos = crudo.map((p) => ({ x: p.x * fac, z: p.z * fac }));
+
+  // Un único máximo para los dos tipos de día: si cada uno se normalizara por su cuenta, el fin de
+  // semana parecería tan lleno como un martes a las 7 de la mañana.
+  let maxD = 1;
+  for (const t of Object.keys(perfil))
+    for (const id of Object.keys(perfil[t]))
+      for (const val of perfil[t][id]) if (val > maxD) maxD = val;
+
+  const serie = (tipo, id) => (perfil[tipo] && perfil[tipo][id]) || new Array(48).fill(0);
+  const valorEn = (tipo, id, reloj) => {      // interpola entre franjas para que la animación fluya
+    const s = serie(tipo, id);
+    const i0 = Math.floor(reloj) % 48, i1 = (i0 + 1) % 48, f = reloj - Math.floor(reloj);
+    return s[i0] + (s[i1] - s[i0]) * f;
+  };
+
+  /* --- escena --- */
+  let render;
+  try {
+    render = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  } catch (e) { fallo("este navegador no tiene WebGL disponible"); return; }
+  render.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  render.shadowMap.enabled = true;
+  render.shadowMap.type = THREE.PCFSoftShadowMap;
+  caja.insertBefore(render.domElement, caja.firstChild);
+
+  const escena = new THREE.Scene();
+  const camara = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+
+  const luzAmb = new THREE.HemisphereLight(0xffffff, 0x555555, 0.7);
+  escena.add(luzAmb);
+  const luz = new THREE.DirectionalLight(0xffffff, 0.85);
+  luz.position.set(6.5, 12, 6);
+  luz.castShadow = true;
+  luz.shadow.mapSize.set(1024, 1024);
+  luz.shadow.camera.left = -10; luz.shadow.camera.right = 10;
+  luz.shadow.camera.top = 10; luz.shadow.camera.bottom = -10;
+  luz.shadow.camera.near = 1; luz.shadow.camera.far = 40;
+  luz.shadow.bias = -0.0015;
+  escena.add(luz);
+
+  const suelo = new THREE.Mesh(
+    new THREE.CircleGeometry(7.25, 72),
+    new THREE.MeshStandardMaterial({ roughness: 0.96, metalness: 0 }));
+  suelo.rotation.x = -Math.PI / 2;
+  suelo.receiveShadow = true;
+  escena.add(suelo);
+
+  const borde = new THREE.Mesh(
+    new THREE.RingGeometry(7.23, 7.35, 96),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+  borde.rotation.x = -Math.PI / 2;
+  borde.position.y = 0.004;
+  escena.add(borde);
+
+  const rejilla = new THREE.GridHelper(10.2, 14);
+  rejilla.material.transparent = true;
+  rejilla.material.opacity = 0.3;
+  rejilla.position.y = 0.002;
+  escena.add(rejilla);
+
+  // Corredores: une las estaciones de una misma troncal, ordenadas de norte a sur.
+  const corredores = new THREE.Group();
+  escena.add(corredores);
+  const porCorredor = {};
+  est.forEach((e, i) => { (porCorredor[e.corredor] = porCorredor[e.corredor] || []).push(i); });
+  // Se dibujan como tubos y no como líneas: el grosor de `LineBasicMaterial` lo ignora casi todo
+  // navegador, y una troncal de un píxel se pierde contra el suelo.
+  const lineasCorr = [];
+  for (const nombre of Object.keys(porCorredor)) {
+    const idx = porCorredor[nombre].slice().sort((a, b) => est[b].lat - est[a].lat);
+    if (idx.length < 2) continue;
+    const curva = new THREE.CatmullRomCurve3(
+      idx.map((i) => new THREE.Vector3(pos[i].x, 0.07, pos[i].z)));
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0, transparent: true, opacity: 0.8 });
+    const tubo = new THREE.Mesh(new THREE.TubeGeometry(curva, 48, 0.055, 8, false), mat);
+    lineasCorr.push(mat);
+    corredores.add(tubo);
+  }
+
+  // Torre por estación: el cubo se desplaza media unidad hacia arriba para que crezca desde el
+  // piso al escalar en Y, no desde su centro.
+  const geoTorre = new THREE.BoxGeometry(0.46, 1, 0.46);
+  geoTorre.translate(0, 0.5, 0);
+  const geoHalo = new THREE.RingGeometry(0.36, 0.46, 32);
+
+  const ALTO = 3.6;
+  const torres = est.map((e, i) => {
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.08 });
+    const m = new THREE.Mesh(geoTorre, mat);
+    m.position.set(pos[i].x, 0, pos[i].z);
+    m.scale.y = 0.05;
+    m.castShadow = true;
+    m.userData = { i };
+    escena.add(m);
+
+    const halo = new THREE.Mesh(geoHalo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.45 }));
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.set(pos[i].x, 0.008, pos[i].z);
+    escena.add(halo);
+
+    return { mesh: m, mat, halo, i };
+  });
+
+  /* --- etiquetas: texto dibujado en un canvas y pegado como sprite --- */
+  function hacerEtiqueta(texto, color, fondo) {
+    const cvs = document.createElement("canvas");
+    const s = 2;
+    cvs.width = 260 * s; cvs.height = 60 * s;
+    const g = cvs.getContext("2d");
+    g.scale(s, s);
+    g.font = '600 23px Inter, ui-sans-serif, system-ui, sans-serif';
+    g.textAlign = "center"; g.textBaseline = "middle";
+    // Halo del color del panel: el nombre cae encima de torres de cualquier color y sin él
+    // se vuelve ilegible justo donde las estaciones están más juntas.
+    g.lineJoin = "round";
+    g.lineWidth = 5;
+    g.strokeStyle = fondo;
+    g.strokeText(texto, 130, 30);
+    g.fillStyle = color;
+    g.fillText(texto, 130, 30);
+    const tex = new THREE.CanvasTexture(cvs);
+    tex.minFilter = THREE.LinearFilter;
+    return tex;
+  }
+  const etiquetas = est.map((e) => {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false }));
+    sp.scale.set(2.7, 0.62, 1);
+    sp.renderOrder = 10;
+    escena.add(sp);
+    return sp;
+  });
+
+  /* --- colores dependientes del tema --- */
+  function pintarTema() {
+    const oc = oscuro();
+    suelo.material.color.set(cssVar(oc ? "--line" : "--line-2"));
+    borde.material.color.set(cssVar("--line-2"));
+    rejilla.material.color.set(cssVar("--ink3"));
+    rejilla.material.opacity = oc ? 0.22 : 0.3;
+    luzAmb.groundColor.set(oc ? 0x2a2a28 : 0x9a9a95);
+    luz.intensity = oc ? 0.7 : 0.85;
+    lineasCorr.forEach((m) => m.color.set(cssVar("--ink3")));
+    const tinta = cssVar("--ink"), fondo = cssVar("--panel");
+    etiquetas.forEach((sp, i) => {
+      if (sp.material.map) sp.material.map.dispose();
+      sp.material.map = hacerEtiqueta(corto(est[i].nombre), tinta, fondo);
+      sp.material.needsUpdate = true;
+    });
+  }
+  pintarTema();
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  (mq.addEventListener ? mq.addEventListener.bind(mq, "change") : mq.addListener.bind(mq))(pintarTema);
+
+  /* --- cámara orbital propia (three.js en cdnjs no trae OrbitControls) --- */
+  const INICIO = { th: -0.34, ph: 0.88, r: 16.2 };
+  const vista = { th: INICIO.th, ph: INICIO.ph, r: INICIO.r, obj: new THREE.Vector3(0, 1.05, 0) };
+  const meta = { th: vista.th, ph: vista.ph, r: vista.r, obj: vista.obj.clone() };
+
+  function colocarCamara() {
+    ["th", "ph", "r"].forEach((k) => { vista[k] += (meta[k] - vista[k]) * 0.14; });
+    vista.obj.lerp(meta.obj, 0.14);
+    const sp = Math.sin(vista.ph), cp = Math.cos(vista.ph);
+    camara.position.set(
+      vista.obj.x + vista.r * sp * Math.sin(vista.th),
+      vista.obj.y + vista.r * cp,
+      vista.obj.z + vista.r * sp * Math.cos(vista.th));
+    camara.lookAt(vista.obj);
+  }
+
+  let gesto = null;
+  caja.addEventListener("pointerdown", (ev) => {
+    if (ev.target.closest(".ov-br")) return;
+    gesto = { x: ev.clientX, y: ev.clientY, pan: ev.button === 2 || ev.button === 1 || ev.shiftKey, id: ev.pointerId };
+    try { caja.setPointerCapture(ev.pointerId); } catch (e) { /* sin captura, igual funciona */ }
+  });
+  caja.addEventListener("pointermove", (ev) => {
+    if (!gesto || ev.pointerId !== gesto.id) { hover(ev); return; }
+    const dx = ev.clientX - gesto.x, dy = ev.clientY - gesto.y;
+    gesto.x = ev.clientX; gesto.y = ev.clientY;
+    if (gesto.pan) {
+      const cos = Math.cos(vista.th), sin = Math.sin(vista.th);
+      const e = vista.r * 0.0016;
+      meta.obj.x = acotar(meta.obj.x - (dx * cos - dy * sin) * e, -6, 6);
+      meta.obj.z = acotar(meta.obj.z + (dx * sin + dy * cos) * e, -6, 6);
+    } else {
+      meta.th -= dx * 0.008;
+      meta.ph = acotar(meta.ph - dy * 0.006, 0.16, 1.40);
+    }
+    tip.style.opacity = "0";
+  });
+  const soltar = (ev) => { if (gesto && (!ev || ev.pointerId === gesto.id)) gesto = null; };
+  caja.addEventListener("pointerup", soltar);
+  caja.addEventListener("pointercancel", soltar);
+  caja.addEventListener("pointerleave", () => { soltar(); tip.style.opacity = "0"; });
+  caja.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  // La rueda sola no se captura: el panel vive en medio de una página que se desplaza y secuestrar
+  // el scroll sería hostil. Con Ctrl (o ⌘) sí hace zoom, y siempre quedan los botones.
+  let avisoT = 0;
+  caja.addEventListener("wheel", (ev) => {
+    if (!(ev.ctrlKey || ev.metaKey)) {
+      const a = $("#d3-aviso");
+      a.style.opacity = "1";
+      clearTimeout(avisoT);
+      avisoT = setTimeout(() => { a.style.opacity = "0"; }, 1300);
+      return;
+    }
+    ev.preventDefault();
+    meta.r = acotar(meta.r * (ev.deltaY > 0 ? 1.11 : 0.9), 7, 32);
+  }, { passive: false });
+  caja.addEventListener("dblclick", reencuadrar);
+
+  function reencuadrar() {
+    meta.th = INICIO.th; meta.ph = INICIO.ph; meta.r = INICIO.r;
+    meta.obj.set(0, 1.05, 0);
+  }
+  $("#d3-mas").addEventListener("click", () => { meta.r = acotar(meta.r * 0.82, 7, 32); });
+  $("#d3-menos").addEventListener("click", () => { meta.r = acotar(meta.r * 1.22, 7, 32); });
+  $("#d3-reset").addEventListener("click", reencuadrar);
+
+  /* --- señalar estación bajo el cursor --- */
+  const rayo = new THREE.Raycaster();
+  const raton = new THREE.Vector2();
+  let señalada = -1;
+  function hover(ev) {
+    const c = caja.getBoundingClientRect();
+    raton.x = ((ev.clientX - c.left) / c.width) * 2 - 1;
+    raton.y = -((ev.clientY - c.top) / c.height) * 2 + 1;
+    rayo.setFromCamera(raton, camara);
+    const cruce = rayo.intersectObjects(torres.map((t) => t.mesh), false);
+    if (!cruce.length) { señalada = -1; tip.style.opacity = "0"; return; }
+    const i = cruce[0].object.userData.i;
+    señalada = i;
+    const e = est[i];
+    const val = valorEn(tipo, e.id, reloj);
+    tip.innerHTML = `<span class="t">${esc(e.corredor)} · ${esc(e.id)}</span>
+      <b>${esc(e.nombre)}</b><br>
+      ${Math.round(val).toLocaleString("es-CO")} pas. por franja a las ${hhmm(reloj)}<br>
+      <span class="t">pico del día ${Math.round(e.pico || 0).toLocaleString("es-CO")} ·
+      precisión del modelo ${num(e.accuracy)} %</span>`;
+    tip.style.opacity = "1";
+    const x = ev.clientX - c.left, y = ev.clientY - c.top;
+    tip.style.left = acotar(x - tip.offsetWidth / 2, 6, c.width - tip.offsetWidth - 6) + "px";
+    tip.style.top = Math.max(6, y - tip.offsetHeight - 14) + "px";
+  }
+
+  /* --- estado de los controles --- */
+  let tipo = "habil", modo = "demanda", reloj = 14, corriendo = true;
+  const lento = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (lento) { corriendo = false; $("#d3-play").textContent = "Reproducir"; $("#d3-play").setAttribute("aria-pressed", "false"); }
+
+  document.querySelectorAll("[data-tipo]").forEach((b) => b.addEventListener("click", () => {
+    tipo = b.dataset.tipo;
+    document.querySelectorAll("[data-tipo]").forEach((o) => o.classList.toggle("on", o === b));
+  }));
+  document.querySelectorAll("[data-color]").forEach((b) => b.addEventListener("click", () => {
+    modo = b.dataset.color;
+    document.querySelectorAll("[data-color]").forEach((o) => o.classList.toggle("on", o === b));
+    leyenda();
+  }));
+  $("#d3-play").addEventListener("click", () => {
+    corriendo = !corriendo;
+    $("#d3-play").textContent = corriendo ? "Pausar" : "Reproducir";
+    $("#d3-play").setAttribute("aria-pressed", String(corriendo));
+  });
+  const barra = $("#d3-hora");
+  barra.addEventListener("input", () => {
+    reloj = Number(barra.value);
+    corriendo = false;
+    $("#d3-play").textContent = "Reproducir";
+    $("#d3-play").setAttribute("aria-pressed", "false");
+  });
+
+  function leyenda() {
+    $("#d3-leyenda").innerHTML = modo === "demanda"
+      ? `<span><i class="rampa" style="background:${cssRampa(RAMPA_DEM)}"></i>
+           0 → ${Math.round(maxD).toLocaleString("es-CO")} pasajeros por franja de 15 min</span>
+         <span>La altura siempre representa la demanda; el color, su intensidad.</span>`
+      : `<span><i class="rampa" style="background:${cssRampa(RAMPA_ACC)}"></i>
+           80 % → 90 % de accuracy oficial acumulado</span>
+         <span>La altura sigue siendo la demanda: se ve dónde nos equivocamos y cuánto pesa.</span>`;
+  }
+  leyenda();
+
+  /* --- etiquetas sin encimarse ---
+     En el centro de Bogotá hay seis estaciones muy juntas y sus nombres se pisan. Se proyectan a
+     coordenadas de pantalla y se van aceptando de la torre más alta a la más baja, descartando la
+     que caiga sobre una ya puesta. La señalada con el cursor siempre gana. */
+  const proy = new THREE.Vector3();
+  function descongestionar() {
+    const w = caja.clientWidth || 1, h = caja.clientHeight || 1;
+    const cand = torres.map((t) => {
+      proy.copy(etiquetas[t.i].position).project(camara);
+      return { i: t.i, x: (proy.x * 0.5 + 0.5) * w, y: (-proy.y * 0.5 + 0.5) * h,
+               frente: proy.z < 1, alto: t.mesh.scale.y };
+    });
+    cand.sort((a, b) => (b.i === señalada) - (a.i === señalada) || b.alto - a.alto);
+    const puestas = [];
+    for (const c of cand) {
+      const choca = puestas.some((p) => Math.abs(p.x - c.x) < 84 && Math.abs(p.y - c.y) < 15);
+      const ver = c.frente && (!choca || c.i === señalada);
+      etiquetas[c.i].visible = ver;
+      if (ver) puestas.push(c);
+    }
+  }
+
+  /* --- bucle --- */
+  let anterior = performance.now(), visible = true, vivo = true;
+  const io = new IntersectionObserver((e) => { visible = e[0].isIntersecting; }, { threshold: 0.05 });
+  io.observe(caja);
+  document.addEventListener("visibilitychange", () => { vivo = !document.hidden; });
+
+  function medir() {
+    const w = caja.clientWidth, h = caja.clientHeight;
+    if (!w || !h) return;
+    render.setSize(w, h, false);
+    camara.aspect = w / h;
+    camara.updateProjectionMatrix();
+  }
+  medir();
+  new ResizeObserver(medir).observe(caja);
+
+  function cuadro(ahora) {
+    requestAnimationFrame(cuadro);
+    const dt = Math.min((ahora - anterior) / 1000, 0.1);
+    anterior = ahora;
+    if (!visible || !vivo) return;
+
+    if (corriendo) {
+      reloj = (reloj + dt * 3.2) % 48;          // el día completo en unos 15 segundos
+      barra.value = String(Math.floor(reloj));
+    }
+    $("#d3-reloj").textContent = hhmm(reloj);
+
+    let total = 0;
+    torres.forEach((t) => {
+      const e = est[t.i];
+      const val = valorEn(tipo, e.id, reloj);
+      total += val;
+      const rel = val / maxD;
+      const alto = Math.max(0.05, rel * ALTO);
+      t.mesh.scale.y += (alto - t.mesh.scale.y) * 0.22;
+
+      const c = modo === "demanda"
+        ? interp(RAMPA_DEM, rel)
+        : interp(RAMPA_ACC, ((e.accuracy || 0) - 80) / 10);
+      t.mat.color.setRGB(c[0], c[1], c[2]);
+      t.mat.emissive.setRGB(c[0], c[1], c[2]);
+      t.mat.emissiveIntensity = t.i === señalada ? 0.55 : 0.16;
+      t.halo.material.color.setRGB(c[0], c[1], c[2]);
+      t.halo.material.opacity = 0.2 + rel * 0.5;
+
+      etiquetas[t.i].position.set(t.mesh.position.x, t.mesh.scale.y + 0.55, t.mesh.position.z);
+      etiquetas[t.i].material.opacity = t.i === señalada ? 1 : 0.82;
+    });
+
+    colocarCamara();
+    descongestionar();
+
+    const info = $("#d3-info");
+    info.innerHTML = `<b>${hhmm(reloj)}</b>${tipo === "habil" ? "día hábil" : "fin de semana"} ·
+      ${Math.round(total).toLocaleString("es-CO")} pasajeros en las 12 estaciones`;
+
+    render.render(escena, camara);
+  }
+  requestAnimationFrame(cuadro);
+
+  carga.style.opacity = "0";
+  setTimeout(() => { carga.style.display = "none"; }, 320);
+}
+
 /* ------------------------------------------------------------------ carga */
 async function cargar() {
   try {
@@ -471,6 +1018,10 @@ async function cargar() {
 $("#refresh").addEventListener("click", cargar);
 cargar();
 setInterval(cargar, REFRESCO_MS);
+
+// El mapa 3D se arma una sola vez: su insumo es un perfil histórico que no cambia minuto a minuto,
+// y rehacerlo tiraría la cámara que el usuario haya ajustado.
+mapa3d();
 </script>
 </body>
 </html>
