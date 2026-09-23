@@ -1,5 +1,6 @@
 """Pruebas de política, monitoreo, estrés, registro, entrenamiento e inferencia de punta a punta."""
 
+import json
 from datetime import timedelta
 
 import httpx
@@ -1039,3 +1040,52 @@ def test_repeating_an_identical_delivery_reuses_the_row_and_the_receipt(world, m
     assert db.tables["submissions"][0]["submission_id"] == first["submission_id"]
     posts = [c for c in server.calls if c.method == "POST"]
     assert len({c.headers["idempotency-key"] for c in posts}) == 1  # misma llave en ambos POST
+
+
+# ------------------------------------------------------------------ captura del leaderboard
+from pulso.monitor_job import capture_leaderboard  # noqa: E402
+
+
+class LeaderboardApi:
+    """API mínima con identidad y leaderboard, para probar la captura sin red."""
+
+    def __init__(self, yo="Miguel Angel Melo Rinta", fallar=None):
+        self.yo = yo
+        self.fallar = fallar or set()
+
+    def me(self):
+        if "me" in self.fallar:
+            raise PulsoApiError(401, "invalid_api_key", "no", None, "/v1/me")
+        return {"display_name": self.yo}
+
+    def leaderboard(self, window="cumulative"):
+        # La tabla es fija: quién somos lo decide me(), como en la API real.
+        if window in self.fallar:
+            raise PulsoApiError(500, None, "roto", None, "/v1/leaderboard")
+        return {"data": [
+            {"display_name": "Otra Persona", "rank": 1, "accuracy": 90.0, "coverage": 1.0},
+            {"display_name": "Miguel Angel Melo Rinta", "rank": 3, "accuracy": 80.0, "coverage": 0.8},
+        ]}
+
+
+def test_leaderboard_capture_stores_our_position_and_no_other_names(fake_db):
+    capturado = capture_leaderboard(fake_db, LeaderboardApi())
+    filas = fake_db.tables["leaderboard_snapshots"]
+    assert {f["window_name"] for f in filas} == {"cumulative", "rolling_24h"}
+    assert all(f["rank"] == 3 and f["participants"] == 2 for f in filas)
+    assert all(f["best_accuracy"] == 90.0 for f in filas)
+    # ningún nombre ajeno queda almacenado
+    assert "Otra Persona" not in json.dumps(filas)
+    assert capturado["rolling_24h"]["puesto"] == 3
+
+
+def test_leaderboard_capture_is_silent_when_the_api_fails(fake_db):
+    assert capture_leaderboard(fake_db, LeaderboardApi(fallar={"me"})) == {}
+    assert not fake_db.tables.get("leaderboard_snapshots")
+    parcial = capture_leaderboard(fake_db, LeaderboardApi(fallar={"cumulative"}))
+    assert list(parcial) == ["rolling_24h"]
+
+
+def test_leaderboard_capture_skips_when_we_are_not_listed(fake_db):
+    assert capture_leaderboard(fake_db, LeaderboardApi(yo="Alguien Que No Compite")) == {}
+    assert not fake_db.tables.get("leaderboard_snapshots")

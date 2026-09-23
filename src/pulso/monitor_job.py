@@ -113,6 +113,36 @@ def _operational(db: Supabase, api: PulsoApi | None, data_now: pd.Timestamp,
     return {"collector_lag_minutes": lag, "coverage": coverage, "failed_runs_24h": failed}
 
 
+def capture_leaderboard(db: Supabase, api: PulsoApi) -> dict[str, Any]:
+    """Guarda nuestra posición en `leaderboard_snapshots` para que el dashboard no use la API key.
+
+    Solo se persiste lo nuestro y el mejor accuracy de la cohorte como referencia numérica: los
+    nombres de los demás participantes no son nuestros para publicarlos.
+    """
+    try:
+        yo = api.me().get("display_name")
+    except (PulsoApiError, KeyError):
+        return {}
+    capturado = {}
+    for window in ("cumulative", "rolling_24h"):
+        try:
+            rows = api.leaderboard(window).get("data") or []
+        except PulsoApiError:
+            continue
+        mio = next((r for r in rows if r.get("display_name") == yo), None)
+        mejor = rows[0] if rows else None
+        if mio is None:
+            continue
+        db.insert("leaderboard_snapshots", {
+            "window_name": window, "rank": mio.get("rank"), "participants": len(rows),
+            "accuracy": mio.get("accuracy"), "coverage": mio.get("coverage"),
+            "best_accuracy": (mejor or {}).get("accuracy"),
+            "best_coverage": (mejor or {}).get("coverage"),
+        })
+        capturado[window] = {"puesto": mio.get("rank"), "accuracy": mio.get("accuracy")}
+    return capturado
+
+
 def run_monitor(db: Supabase, registry: ModelRegistry, api: PulsoApi | None = None, *,
                 now: datetime | None = None, rules: RetrainRules = RetrainRules()) -> dict[str, Any]:
     now = now or datetime.now(UTC)
@@ -182,6 +212,8 @@ def run_monitor(db: Supabase, registry: ModelRegistry, api: PulsoApi | None = No
                                  ) / pd.Timedelta(hours=1)),
         **ops,
     )
+    leaderboard = capture_leaderboard(db, api) if api is not None else {}
+
     decision = decide_retrain(state, rules)
     reference_acc = state.reference_accuracy
     limit = None if reference_acc is None else reference_acc - rules.performance_drop_pts
@@ -210,7 +242,8 @@ def run_monitor(db: Supabase, registry: ModelRegistry, api: PulsoApi | None = No
         "model_version": version, "github_run_id": os.getenv("GITHUB_RUN_ID"),
     })
     return {"decision": decision.decision, "reason": decision.reason, "signals": decision.signals,
-            "model_version": version, "data_now": data_now.isoformat(), **evidence}
+            "model_version": version, "data_now": data_now.isoformat(),
+            "leaderboard": leaderboard, **evidence}
 
 
 def main(argv: list[str] | None = None) -> int:

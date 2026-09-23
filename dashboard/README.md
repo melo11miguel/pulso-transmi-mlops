@@ -1,23 +1,21 @@
 # Dashboard (bono)
 
-Observabilidad del pipeline: accuracy en el tiempo, por estación y horizonte, drift, estado
-operativo, versiones del modelo y posición en el leaderboard.
+Observabilidad del pipeline: accuracy en el tiempo, carrera del puesto, error por estación y
+horizonte, drift, estado operativo, versiones del modelo y posición en el leaderboard.
 
-## Seguridad
+**En vivo:** https://pulso-transmi-dashboard.vercel.app
 
-- `api/state.js` es la **única** capa con acceso a credenciales. Corre en el servidor de Vercel.
-- El navegador recibe únicamente JSON agregado: ni la `service_role` de Supabase ni `PULSO_API_KEY`
-  salen del servidor, y no se usa ninguna variable `NEXT_PUBLIC_*`.
-- No se publican nombres de otros participantes: solo nuestra posición y el mejor accuracy de la
-  cohorte como referencia numérica.
-- Toda la agregación vive en la función SQL `public.dashboard_state()` (migración 0004), cuyo
-  permiso de ejecución es exclusivo de `service_role`.
+## Por qué no necesita secretos
 
-## Variables de entorno en Vercel
+Es una página **estática**. Llama a `public.dashboard_public()` en Supabase con la **clave
+publicable**, que está diseñada para viajar en el navegador:
 
-| Variable | Uso |
-|---|---|
-| `SUPABASE_URL` | Proyecto de Supabase |
-| `SUPABASE_SERVICE_ROLE_KEY` | Lectura del estado (solo servidor) |
-| `PULSO_API_KEY` | Leaderboard e identidad vía `/v1/me` (solo servidor) |
-| `PULSO_API_URL` | Opcional; por defecto la API pública del reto |
+- Esa clave solo puede ejecutar esa función. Verificado: no puede leer `observations`,
+  `submissions`, `model_versions` ni `leaderboard_snapshots` (todas responden 42501), ni llamar a
+  la función interna `dashboard_state()`.
+- La `service_role` de Supabase y `PULSO_API_KEY` nunca entran aquí: viven solo en GitHub Actions.
+- El leaderboard lo captura el monitor (que sí tiene la API key) en `leaderboard_snapshots`, así el
+  dashboard lo lee sin credenciales. Solo se guarda nuestra posición y el mejor accuracy de la
+  cohorte: **no se almacenan ni publican nombres de otros participantes**.
+
+Migraciones relacionadas: `supabase/migrations/0004_dashboard_state.sql` y `0005_dashboard_public.sql`.
