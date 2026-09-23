@@ -910,3 +910,77 @@ def test_waiting_passes_the_sync_through_on_the_attempt_that_submits(world):
                                    sync=lambda: calls.append("sync"))
     assert result["status"] == "submitted"
     assert calls == ["sync"]  # no se sincroniza en los intentos sin ciclo
+
+
+# ------------------------------------------------------------------ sesión de varios ciclos
+from pulso.predict import run_session  # noqa: E402
+
+
+def test_session_submits_every_cycle_that_opens(world):
+    """Un solo job cubre varios ciclos consecutivos, no solo el primero."""
+    db, registry, server, api, now, wide = world
+    opened = []
+
+    def next_cycle(n):
+        c = _cycle(wide, cycle_id=f"cyc_{n}")
+        opened.append(c["cycle_id"])
+        return c
+
+    server.cycle = next_cycle(1)
+    clock = FakeClock()
+
+    def sleep_and_rotate(seconds):
+        clock.sleep(seconds)
+        # cada 2 minutos de espera abre un ciclo nuevo
+        if len(clock.sleeps) in (2, 4):
+            server.cycle = next_cycle(len(clock.sleeps))
+
+    result = run_session(api, db, registry, duration_seconds=300, poll_seconds=60,
+                         sleep=sleep_and_rotate, clock=clock.now, now_fn=lambda: now)
+    assert result["status"] == "session"
+    assert result["cycles_submitted"] == 3
+    assert result["cycles"] == ["cyc_1", "cyc_2", "cyc_4"]
+    assert len(db.tables["submissions"]) == 3
+
+
+def test_session_stops_at_the_deadline(world):
+    db, registry, server, api, now, _ = world
+    server.cycle = None
+    clock = FakeClock()
+    result = run_session(api, db, registry, duration_seconds=180, poll_seconds=60,
+                         sleep=clock.sleep, clock=clock.now, now_fn=lambda: now)
+    assert result["cycles_submitted"] == 0
+    assert clock.t == 180  # no se pasa del plazo
+
+
+def test_session_survives_a_transient_error_and_keeps_covering(world):
+    db, registry, server, api, now, wide = world
+    clock = FakeClock()
+    calls = {"n": 0}
+    real_cycle = server.cycle
+
+    def flaky_current_cycle():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PulsoApiError(503, None, "caída temporal", "req-x", "/v1/forecast-cycles/current")
+        return real_cycle
+
+    api.current_cycle = flaky_current_cycle
+    result = run_session(api, db, registry, duration_seconds=120, poll_seconds=60,
+                         sleep=clock.sleep, clock=clock.now, now_fn=lambda: now)
+    assert result["cycles_submitted"] == 1  # se recuperó tras el fallo
+    assert "last_error" in result and "503" in result["last_error"]
+
+
+def test_session_gives_up_after_too_many_consecutive_errors(world):
+    db, registry, server, api, now, _ = world
+    clock = FakeClock()
+
+    def always_failing():
+        raise PulsoApiError(500, None, "roto", None, "/v1/forecast-cycles/current")
+
+    api.current_cycle = always_failing
+    with pytest.raises(PulsoApiError):
+        run_session(api, db, registry, duration_seconds=3600, poll_seconds=60,
+                    max_consecutive_errors=3, sleep=clock.sleep, clock=clock.now,
+                    now_fn=lambda: now)

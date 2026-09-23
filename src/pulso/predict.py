@@ -280,11 +280,54 @@ def run_inference_waiting(api: PulsoApi, db: Supabase, registry: ModelRegistry, 
         sleep(min(poll_seconds, max(0.0, deadline - clock())))
 
 
+def run_session(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
+                duration_seconds: float, poll_seconds: float = 60.0, dry_run: bool = False,
+                sync: Callable[[], Any] | None = None, max_consecutive_errors: int = 5,
+                sleep: Callable[[float], None] = time.sleep,
+                clock: Callable[[], float] = time.monotonic,
+                now_fn: Callable[[], datetime] | None = None) -> dict[str, Any]:
+    """Cubre TODOS los ciclos que abran durante `duration_seconds`, no solo el primero.
+
+    GitHub llegó a estar 5 h sin disparar ninguna ejecución programada, así que esperar un único
+    ciclo no basta: un job cubre varias horas y va entregando cada ciclo que aparece. Los errores
+    transitorios no cortan la sesión (se reintenta en el siguiente sondeo), pero varios seguidos sí
+    la terminan para que el workflow falle a la vista.
+    """
+    deadline = clock() + duration_seconds
+    submitted: list[str] = []
+    errors = 0
+    last_error: Exception | None = None
+    while clock() < deadline:
+        try:
+            result = run_inference_waiting(
+                api, db, registry, wait_seconds=deadline - clock(), poll_seconds=poll_seconds,
+                dry_run=dry_run, sync=sync, sleep=sleep, clock=clock, now_fn=now_fn,
+            )
+            errors = 0
+            if result["status"] in ("submitted", "dry_run"):
+                submitted.append(result["cycle_id"])
+                log.info("Ciclo entregado: %s", result)
+        except Exception as exc:  # noqa: BLE001 - una falla puntual no debe cortar horas de cobertura
+            errors += 1
+            last_error = exc
+            log.warning("Fallo en la sesión (%d seguidos): %s", errors, exc)
+            if errors >= max_consecutive_errors:
+                raise
+        if clock() < deadline:  # espera a que abra el ciclo siguiente
+            sleep(min(poll_seconds, max(0.0, deadline - clock())))
+    summary = {"status": "session", "cycles_submitted": len(submitted), "cycles": submitted}
+    if last_error is not None:
+        summary["last_error"] = f"{type(last_error).__name__}: {last_error}"
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Predice el ciclo abierto y envía la entrega")
     parser.add_argument("--dry-run", action="store_true", help="construye y valida sin enviar")
     parser.add_argument("--wait-for-cycle", type=float, default=0.0, metavar="MINUTOS",
                         help="si no hay ciclo abierto, espera hasta N minutos a que abra uno")
+    parser.add_argument("--run-for", type=float, default=0.0, metavar="MINUTOS",
+                        help="mantiene la sesión N minutos entregando cada ciclo que abra")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -295,13 +338,18 @@ def main(argv: list[str] | None = None) -> int:
         with pipeline_run(db, "predict") as run, \
                 PulsoApi(settings.api_url, settings.require_api_key()) as api:
             store = SupabaseStore(db)
-            result = run_inference_waiting(
-                api, db, ModelRegistry(db), wait_seconds=args.wait_for_cycle * 60,
-                dry_run=args.dry_run,
-                # Sincroniza en el último momento: entre despertar y entregar pueden pasar
-                # 30+ minutos de espera y la API libera datos nuevos cada 30 min.
-                sync=lambda: run_collector(api, store),
-            )
+            # Sincroniza en el último momento: entre despertar y entregar pueden pasar 30+
+            # minutos de espera y la API libera datos nuevos cada 30 min.
+            sync = lambda: run_collector(api, store)  # noqa: E731
+            registry_ = ModelRegistry(db)
+            if args.run_for > 0:
+                result = run_session(api, db, registry_, duration_seconds=args.run_for * 60,
+                                     dry_run=args.dry_run, sync=sync)
+            else:
+                result = run_inference_waiting(
+                    api, db, registry_, wait_seconds=args.wait_for_cycle * 60,
+                    dry_run=args.dry_run, sync=sync,
+                )
             run.summary.update(result)
             if result["status"] == "skipped":
                 run.skip(result["reason"])
