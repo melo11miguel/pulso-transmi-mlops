@@ -8,6 +8,7 @@ from pulso.backtest import Fold, hourly_origins, make_folds, run_backtest, score
 from pulso.baselines import LastValue, ProfileMean, SeasonalNaive
 from pulso.features import (
     FEATURE_COLUMNS,
+    HORIZONS,
     Profile,
     build_features,
     extend_grid,
@@ -152,10 +153,34 @@ def test_predict_next_matches_batch_prediction():
     model = GbmResidualModel(FAST).fit(wide.iloc[:20 * 96])
     history = wide.iloc[:22 * 96]
     nxt = model.predict_next(history).sort_values(["station_id", "horizon_minutes"])
-    batch = model.predict_batch(extend_grid(history, 4), np.array([len(history) - 1]))
+    # La rejilla se extiende un paso más que el horizonte máximo: `p_curv` mira el perfil en
+    # objetivo+1, así que con solo max(HORIZONS) filas la última quedaría recortada.
+    batch = model.predict_batch(extend_grid(history, max(HORIZONS) + 1),
+                                np.array([len(history) - 1]))
     batch["station_id"] = [model.stations[i] for i in batch["station_idx"]]
     batch = batch.sort_values(["station_id", "horizon"])
     assert np.allclose(nxt["value"].to_numpy(), batch["prediction"].clip(lower=0).to_numpy())
+
+
+def test_longest_horizon_needs_the_extra_grid_row():
+    """Con la rejilla justa, la curvatura del horizonte más largo se recorta y cambia el valor.
+
+    Es el error que tendría producción si `predict_next` extendiera solo `max(HORIZONS)` filas:
+    los tres primeros horizontes saldrían bien y solo el de 60 min quedaría mal, que es la clase
+    de fallo que no se nota a simple vista.
+    """
+    wide = synthetic_wide(days=24)
+    model = GbmResidualModel(FAST).fit(wide.iloc[:20 * 96])
+    history = wide.iloc[:22 * 96]
+    origin = np.array([len(history) - 1])
+    justa = model.predict_batch(extend_grid(history, max(HORIZONS)), origin)
+    holgada = model.predict_batch(extend_grid(history, max(HORIZONS) + 1), origin)
+    corto = justa["horizon"] < max(HORIZONS)
+    assert np.allclose(justa[corto]["prediction"].to_numpy(),
+                       holgada[corto]["prediction"].to_numpy())
+    largo = justa["horizon"] == max(HORIZONS)
+    assert not np.allclose(justa[largo]["prediction"].to_numpy(),
+                           holgada[largo]["prediction"].to_numpy())
 
 
 def test_missing_last_observation_falls_back_to_the_profile():

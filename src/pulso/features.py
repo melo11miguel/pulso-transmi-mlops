@@ -110,7 +110,7 @@ class FeatureSet:
 
 FEATURE_COLUMNS = [
     "station", "horizon", "slot", "dow", "how", "slot_sin", "slot_cos",
-    "p_target", "p_origin", "p_delta",
+    "p_target", "p_origin", "p_delta", "p_curv",
     "r0", "r1", "r2", "r3", "m4", "m16", "m96", "c0", "c4",
 ]
 CATEGORICAL = ["station"]
@@ -160,6 +160,14 @@ def build_features(profile: Profile, times: pd.DatetimeIndex, demand: np.ndarray
 
     p_target = flat(p[target_idx])
     p_origin = flat(p[origins])
+    # Curvatura del perfil en el instante objetivo (segunda diferencia). El perfil es escalonado
+    # por hora de la semana, así que su segunda diferencia marca dónde está a punto de quebrarse:
+    # es la variable que le falta al modelo para acertar en las rampas (amanecer y caída de la
+    # tarde), que eran sus peores horas. Se calcula con el mismo perfil que `p_target`, para que
+    # entrenamiento y producción vean lo mismo. `extend_grid` reserva la fila objetivo+1; en el
+    # borde del histórico se recorta contra la última fila, que es una sola de cada lote.
+    p_prev = flat(at(p, target_idx - 1))
+    p_next = flat(at(p, np.minimum(target_idx + 1, n_time - 1)))
     y_target = log_demand[target_idx]
     data = {
         "station": np.tile(np.arange(n_stations), o_len),
@@ -168,6 +176,7 @@ def build_features(profile: Profile, times: pd.DatetimeIndex, demand: np.ndarray
         "slot_sin": tile(np.sin(2 * np.pi * slot / SLOTS_PER_DAY)),
         "slot_cos": tile(np.cos(2 * np.pi * slot / SLOTS_PER_DAY)),
         "p_target": p_target, "p_origin": p_origin, "p_delta": p_target - p_origin,
+        "p_curv": p_next - 2 * p_target + p_prev,
         "r0": flat(at(resid, origins)), "r1": flat(at(resid, origins - 1)),
         "r2": flat(at(resid, origins - 2)), "r3": flat(at(resid, origins - 3)),
         "m4": flat(roll[4][origins]), "m16": flat(roll[16][origins]), "m96": flat(roll[96][origins]),

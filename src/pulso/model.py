@@ -134,7 +134,9 @@ class GbmResidualModel(Forecaster):
         """
         history = history.reindex(columns=self.stations)
         max_h = max(HORIZONS)
-        wide_ext = extend_grid(history, max_h)
+        # Un paso más que el horizonte máximo: `p_curv` mira el perfil en objetivo+1 y sin esa
+        # fila la curvatura del horizonte de 60 min saldría recortada.
+        wide_ext = extend_grid(history, max_h + 1)
         origin = len(history) - 1
         out = self.predict_batch(wide_ext, np.array([origin]))
         out["station_id"] = [self.stations[i] for i in out["station_idx"]]
