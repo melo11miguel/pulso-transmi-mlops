@@ -306,10 +306,33 @@ function linea(id, puntos, opts) {
   const d = puntos.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[yKey]).toFixed(1)}`).join(" ");
   const area = `${d} L${x(puntos.length - 1).toFixed(1)},${H - P.b} L${x(0).toFixed(1)},${H - P.b} Z`;
   const gid = `g-${id}`;
+
+  // Media móvil: la serie es por hora y la referencia de la cohorte es un agregado, que es liso
+  // por construcción. Comparar una contra otra hace ver los valles horarios como caídas reales,
+  // así que se dibuja también nuestro nivel suavizado, que sí es comparable.
+  const vent = opts.media || 0;
+  const suave = vent > 1 ? puntos.map((_, i) => {
+    const desde = Math.max(0, i - vent + 1);
+    const trozo = puntos.slice(desde, i + 1).map((q) => q[yKey]).filter((q) => q != null);
+    return trozo.length ? trozo.reduce((a, b) => a + b, 0) / trozo.length : null;
+  }) : null;
+  const dSuave = suave
+    ? suave.map((v, i) => (v == null ? "" : `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)).join(" ")
+    : "";
+
+  // Las etiquetas del eje se reparten cada `cada` puntos, pero la última siempre se muestra. Si
+  // cae muy cerca de la anterior se quita esa, o quedan una encima de otra.
   const cada = Math.max(1, Math.round(puntos.length / 5));
-  const xlabels = puntos.map((p, i) => (i % cada === 0 || i === puntos.length - 1)
-    ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="var(--ink3)" font-size="10.5">${
-        new Date(p[xKey]).toLocaleString("es-CO", { hour: "2-digit", minute: "2-digit" })}</text>` : "").join("");
+  const idx = [];
+  for (let i = 0; i < puntos.length; i += cada) idx.push(i);
+  const ultimo = puntos.length - 1;
+  if (idx[idx.length - 1] !== ultimo) {
+    if (x(ultimo) - x(idx[idx.length - 1]) < 78) idx.pop();
+    idx.push(ultimo);
+  }
+  const xlabels = idx.map((i) =>
+    `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="var(--ink3)" font-size="10.5">${
+      new Date(puntos[i][xKey]).toLocaleString("es-CO", { hour: "2-digit", minute: "2-digit" })}</text>`).join("");
   const pts = puntos.map((p, i) => `<circle class="pt" data-i="${i}" cx="${x(i).toFixed(1)}"
       cy="${y(p[yKey]).toFixed(1)}" r="3.2" fill="${color}" stroke="var(--panel)" stroke-width="1.6"/>`).join("");
 
@@ -321,7 +344,10 @@ function linea(id, puntos, opts) {
       </linearGradient></defs>
       ${ticks}${refLines}
       <path d="${area}" fill="url(#${gid})"/>
-      <path d="${d}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${suave ? 1.3 : 2.2}"
+        stroke-linejoin="round" stroke-linecap="round" opacity="${suave ? 0.45 : 1}"/>
+      ${suave ? `<path d="${dSuave}" fill="none" stroke="${color}" stroke-width="2.6"
+        stroke-linejoin="round" stroke-linecap="round"/>` : ""}
       ${pts}${xlabels}
       <line class="cross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" stroke="var(--ink3)"
         stroke-width="1" stroke-dasharray="3 3" opacity="0"/>
@@ -419,15 +445,19 @@ function render(d) {
     <div class="ph"><h2>Accuracy oficial por hora objetivo</h2>
       <span class="hint">WAPE por estación, promediado sin ponderar</span></div>
     ${linea("c-acc", d.serie_accuracy, { xKey: "hora", yKey: "accuracy", color: "var(--blue)",
-      etiqueta: "Accuracy por hora",
+      etiqueta: "Accuracy por hora", media: 6,
       refs: [{ v: TECHO, t: `techo ${TECHO} %`, color: "var(--ink3)" },
              r && r.mejor_accuracy ? { v: r.mejor_accuracy, t: "mejor cohorte", color: "var(--orange)" } : {}],
       vacio: "Se dibuja cuando haya varios ciclos evaluados." })}
     <div class="legend">
-      <span><i style="background:var(--blue)"></i>nuestro accuracy</span>
+      <span><i style="background:var(--blue)"></i>nuestro nivel (media de 6 horas)</span>
+      <span><i style="background:var(--blue);opacity:.45"></i>hora a hora</span>
       <span><i class="ref"></i>techo teórico ${TECHO} % · límite del ruido de los datos</span>
-      ${r && r.mejor_accuracy ? '<span><i class="ref" style="border-color:var(--orange)"></i>mejor de la cohorte</span>' : ""}
+      ${r && r.mejor_accuracy ? '<span><i class="ref" style="border-color:var(--orange)"></i>mejor de la cohorte (agregado)</span>' : ""}
     </div>
+    <div class="hint" style="margin-top:8px">La línea de la cohorte es un agregado, así que es lisa
+      por construcción: la comparable es la media de 6 horas. El vaivén hora a hora es de la hora
+      del día, no del modelo — las peores son 18 h a 21 h y la madrugada.</div>
   </div>`;
 
   // El resto va a un segundo contenedor para que el mapa 3D quede intercalado entre ambos
