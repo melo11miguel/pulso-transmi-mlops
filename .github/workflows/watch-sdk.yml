@@ -1,0 +1,101 @@
+name: Vigilar el SDK del profesor
+
+# Avisa cuando el repositorio del profesor cambia, para no enterarnos tarde de un ajuste en las
+# reglas, en la plantilla o en la guía.
+#
+# Dos decisiones que vale la pena explicar:
+#
+# 1. Abre un issue en vez de fallar. Fallar seria la forma facil de recibir el correo de GitHub,
+#    pero el monitor del pipeline vigila los workflows fallidos: un fallo a proposito ensuciaria
+#    esa señal y acabariamos ignorando alertas de verdad.
+# 2. Guarda el ultimo SHA visto en la cache de Actions. Sin estado habria que mirar "commits de
+#    las ultimas N horas", y como GitHub descarta buena parte de las ejecuciones programadas,
+#    una ventana fija deja huecos ciegos o repite el mismo aviso. Con el SHA, un salto de
+#    ejecucion solo retrasa el aviso, nunca lo pierde.
+
+on:
+  schedule:
+    - cron: "17 7,19 * * *"   # dos veces al dia, ~12 h aparte; minuto fuera de :00 a proposito
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: watch-sdk
+  cancel-in-progress: false
+
+env:
+  SDK: uexternadojz/pulso-transmi-sdk
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Recuperar el ultimo SHA visto
+        uses: actions/cache/restore@v4
+        with:
+          path: estado
+          key: sdk-sha-${{ github.run_id }}
+          restore-keys: sdk-sha-
+
+      - name: Comparar y avisar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p estado
+          rama=$(gh api "repos/$SDK" --jq .default_branch)
+          actual=$(gh api "repos/$SDK/commits/$rama" --jq .sha)
+          previo=$(cat estado/sha 2>/dev/null || true)
+          echo "$actual" > estado/sha
+          echo "rama=$rama actual=$actual previo=${previo:-ninguno}"
+
+          if [ -z "$previo" ]; then
+            echo "Primera ejecucion: se registra $actual sin avisar." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$previo" = "$actual" ]; then
+            echo "Sin novedades en $SDK (sigue en ${actual:0:7})." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Que cambio, en contenido y no solo en historial: un commit que agrega algo y otro que
+          # lo revierte no deberian sacarnos a mirar.
+          commits=$(gh api "repos/$SDK/compare/$previo...$actual" \
+            --jq '.commits[] | "- `\(.sha[0:7])` \(.message | split("\n")[0])"')
+          archivos=$(gh api "repos/$SDK/compare/$previo...$actual" \
+            --jq '.files[]? | "- `\(.filename)` (+\(.additions)/-\(.deletions))"' || true)
+
+          {
+            echo "## Cambios en \`$SDK\`"
+            echo
+            echo "De \`${previo:0:7}\` a \`${actual:0:7}\`"
+            echo
+            echo "### Commits"
+            echo "$commits"
+            echo
+            echo "### Archivos con cambio neto"
+            echo "${archivos:-_Ninguno: los commits se anulan entre si, el contenido final es el mismo._}"
+          } > cuerpo.md
+
+          cat cuerpo.md >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "${archivos:-}" ]; then
+            echo "Solo cambio el historial, no el contenido: no se abre issue."
+            exit 0
+          fi
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "El SDK del profesor cambio (${previo:0:7} → ${actual:0:7})" \
+            --body-file cuerpo.md
+
+      - name: Guardar el SHA visto
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: estado
+          key: sdk-sha-${{ github.run_id }}
