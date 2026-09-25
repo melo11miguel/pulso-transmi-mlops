@@ -30,6 +30,23 @@ from .monitor import level_noise
 PRED_COLUMNS = ["origin_idx", "station_idx", "horizon", "target_at", "prediction"]
 
 
+class FeatureMismatchError(RuntimeError):
+    """El artefacto pide variables que este código no sabe construir.
+
+    Pasa cuando se promueve un modelo con una variable nueva mientras hay procesos en vuelo con
+    el código anterior: el registro les entrega el champion nuevo y `build_features` no produce
+    esa columna. Es un error permanente, no transitorio: reintentarlo no lo arregla, así que se
+    distingue por tipo para que la inferencia degrade al perfil en vez de reintentar en vano.
+    """
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = list(missing)
+        super().__init__(
+            f"El modelo requiere variables que este código no genera: {', '.join(self.missing)}. "
+            "El artefacto es más nuevo que el código desplegado; actualice el despliegue."
+        )
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     half_life_days: float | None = None  # None = todas las semanas pesan igual
@@ -119,6 +136,12 @@ class GbmResidualModel(Forecaster):
         times, demand = wide_ext.index, wide_ext.to_numpy(dtype=float)
         origins = np.asarray(origins)
         frames = []
+        # `build_features` produce exactamente FEATURE_COLUMNS. Si el artefacto pide alguna que no
+        # esté ahí, el código es más viejo que el modelo: se corta con un error propio y claro en
+        # vez de un KeyError de pandas a mitad del lote.
+        faltan = [c for c in self.feature_columns if c not in FEATURE_COLUMNS]
+        if faltan:
+            raise FeatureMismatchError(faltan)
         for h in horizons:
             fs = build_features(self.profile, times, demand, origins, h)
             residual = self.gbm.predict(fs.X[self.feature_columns])

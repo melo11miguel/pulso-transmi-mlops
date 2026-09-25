@@ -1,5 +1,6 @@
 """Pruebas de política, monitoreo, estrés, registro, entrenamiento e inferencia de punta a punta."""
 
+import copy
 import json
 from datetime import timedelta
 
@@ -12,7 +13,7 @@ from test_features import FAST, synthetic_wide
 
 from pulso.api import PulsoApi, PulsoApiError
 from pulso.features import Profile
-from pulso.model import GbmResidualModel
+from pulso.model import FeatureMismatchError, GbmResidualModel
 from pulso.monitor import (
     baseline_accuracy,
     level_noise,
@@ -406,6 +407,41 @@ def test_build_predictions_falls_back_to_profile_for_unsupported_horizons(traine
     cycle = _cycle(wide, horizons=(1, 6))  # +90 min no lo cubre el modelo
     predictions, fallback = build_predictions(model, wide, cycle)
     assert fallback == 3 and len(predictions) == 6 and (predictions["value"] > 0).all()
+
+
+def test_a_model_newer_than_the_code_degrades_to_the_profile_instead_of_failing(trained):
+    """Reproduce el incidente del 2026-09-24: se perdieron dos ciclos por esto.
+
+    Se promovió un champion con una variable nueva mientras corría una sesión de 4 h con el código
+    anterior. El registro le entregó el modelo nuevo, `build_features` no sabía construir esa
+    columna y pandas reventaba con un KeyError. Como el error era permanente pero se reintentaba
+    como transitorio, la sesión murió tras cinco intentos y dejó de cubrir ciclos durante 1 h 33.
+
+    Entregar el perfil estacional es peor que entregar el modelo, pero no entregar nada es mucho
+    peor que ambos: un target ausente cuenta como predicción cero.
+    """
+    wide, model = trained
+    cycle = _cycle(wide)
+    # Copia superficial: el fixture se comparte entre tests y mutarlo contaminaría a los demás.
+    futuro = copy.copy(model)
+    futuro.feature_columns = [*model.feature_columns, "variable_del_futuro"]
+
+    predictions, fallback = build_predictions(futuro, wide, cycle)
+
+    assert len(predictions) == 12, "debe cubrir todos los targets del ciclo"
+    assert fallback == 12, "todos salen del perfil, y queda contado para el monitor"
+    assert (predictions["value"] > 0).all()
+
+
+def test_predict_batch_names_the_missing_features(trained):
+    """El error debe decir qué falta y por qué, no un KeyError de pandas a mitad del lote."""
+    wide, model = trained
+    futuro = copy.copy(model)
+    futuro.feature_columns = [*model.feature_columns, "variable_del_futuro"]
+    with pytest.raises(FeatureMismatchError, match="variable_del_futuro") as exc:
+        futuro.predict_next(wide)
+    assert exc.value.missing == ["variable_del_futuro"]
+    assert "más nuevo que el código" in str(exc.value)
 
 
 def test_build_predictions_rejects_history_beyond_the_cutoff(trained):

@@ -29,7 +29,7 @@ from .config import Settings
 from .dbdata import load_wide
 from .features import STEP
 from .ingest import run_collector
-from .model import GbmResidualModel
+from .model import FeatureMismatchError, GbmResidualModel
 from .registry import ModelRegistry, RegistryError, current_git_commit
 from .runlog import pipeline_run
 from .store import SupabaseStore
@@ -71,8 +71,20 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
         # pero los pasos deben contarse desde el corte, no desde la última fila.
         pad = pd.date_range(history.index[-1] + STEP, cutoff.tz_convert(history.index.tz), freq=STEP)
         history = pd.concat([history, pd.DataFrame(np.nan, index=pad, columns=history.columns)])
-    model_out = model.predict_next(history)
-    by_key = {(r.station_id, _utc(r.target_at)): float(r.value) for r in model_out.itertuples()}
+    try:
+        model_out = model.predict_next(history)
+    except FeatureMismatchError as exc:
+        # El artefacto es más nuevo que este proceso. Reintentar no lo arregla, y quedarse sin
+        # entregar es lo peor que puede pasar: un target ausente cuenta como predicción cero y
+        # hunde la cobertura. Se deja `by_key` vacío a propósito para que cada target caiga por el
+        # respaldo de abajo, que usa el perfil estacional del propio artefacto y no necesita
+        # ninguna variable construida. Queda contado en `fallback_targets`, que ya vigila el monitor.
+        log.error("Modelo incompatible con este código (falta %s): se entrega el perfil estacional",
+                  ", ".join(exc.missing))
+        model_out = None
+    by_key = ({} if model_out is None
+              else {(r.station_id, _utc(r.target_at)): float(r.value)
+                    for r in model_out.itertuples()})
 
     rows, fallback = [], 0
     columns = {s: i for i, s in enumerate(model.stations)}
