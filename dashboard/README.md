@@ -40,5 +40,9 @@ publicable**, que está diseñada para viajar en el navegador:
 que el propio reto publica más nuestro desempeño, y se le concede `execute` a `anon` sin abrir
 ninguna tabla.
 
-Migraciones relacionadas: `supabase/migrations/0004_dashboard_state.sql`, `0005_dashboard_public.sql`
-y `0006_red_3d.sql`.
+Migraciones relacionadas: `20260923165931_dashboard_state_function.sql`,
+`20260923194119_dashboard_public_access.sql` y `20260923203631_red_3d.sql`.
+
+Los nombres llevan el sello de version que usa Supabase. Es obligatorio: la
+integracion de GitHub compara el historial remoto contra los archivos locales y
+marca el commit en rojo si no coinciden.

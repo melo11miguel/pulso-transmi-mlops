@@ -2,7 +2,7 @@
 
 ## 1. Puesta en marcha (una sola vez)
 
-**Supabase** (proyecto `pulso-transmi`, ya creado y migrado con `supabase/migrations/0001…0003`)
+**Supabase** (proyecto `pulso-transmi`, ya creado y migrado con `supabase/migrations/` (7 migraciones))
 
 1. Dashboard → *Project Settings → API Keys* → copia la clave **service_role** (secreta).
 2. Local: pégala en `.env` como `SUPABASE_SERVICE_ROLE_KEY` (el archivo está en `.gitignore`).
