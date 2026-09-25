@@ -3,6 +3,10 @@ name: Recolectar y monitorear
 # Cada 30 minutos (la API libera datos nuevos con esa cadencia): recoge el siguiente lote, evalúa
 # las predicciones ya resueltas, revisa drift y decide si reentrenar. Si la decisión es «retrain»,
 # dispara el entrenamiento; ese workflow aplica la regla de promoción (no promueve por novedad).
+#
+# Corre en sesión, igual que la predicción y por el mismo motivo: el cron pide 30 minutos y GitHub
+# lo arrancaba cada 4-5 h. Eso dejaba el puesto y la cobertura del dashboard con horas de retraso,
+# porque `leaderboard_snapshots` solo se escribe cuando el monitor corre.
 on:
   schedule:
     - cron: "5,35 * * * *"
@@ -10,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  actions: write # necesario solo para disparar el entrenamiento
+  actions: write # disparar el entrenamiento y encadenar la sesión siguiente
 
 concurrency:
   group: collect-and-monitor
@@ -20,7 +24,8 @@ jobs:
   run:
     if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Sesión de 5,5 h; el límite de GitHub son 6 h por job.
+    timeout-minutes: 350
     env:
       PULSO_API_URL: ${{ vars.PULSO_API_URL }}
       PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
@@ -37,13 +42,49 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m pip install -e . --no-deps
-      - name: Recolectar observaciones nuevas
-        run: python -m pulso.ingest
-      - name: Evaluar, detectar drift y decidir
-        id: monitor
-        run: python -m pulso.monitor_job
-      - name: Disparar entrenamiento si la decisión es reentrenar
-        if: steps.monitor.outputs.decision == 'retrain'
+      # Once vueltas cada 30 min cubren 5,5 h. El entrenamiento se dispara desde dentro del bucle:
+      # si dependiera de la salida del paso, solo contaría la última vuelta y se perderían las
+      # decisiones de las diez anteriores.
+      - name: Monitorear cada 30 min durante la sesión
         env:
           GH_TOKEN: ${{ github.token }}
-        run: 'gh workflow run train.yml -f reason="monitor - reentrenar (run ${{ github.run_id }})"'
+          VUELTAS: "11"
+          PAUSA: "1800"
+        run: |
+          set -uo pipefail
+          fallos=0
+          for i in $(seq 1 "$VUELTAS"); do
+            echo "::group::vuelta $i de $VUELTAS"
+            python -m pulso.ingest || echo "la recolección falló en esta vuelta"
+            salida=$(mktemp)
+            if GITHUB_OUTPUT="$salida" python -m pulso.monitor_job; then
+              fallos=0
+              if grep -qx "decision=retrain" "$salida"; then
+                gh workflow run train.yml \
+                  -f reason="monitor - reentrenar (run ${{ github.run_id }}, vuelta $i)"
+              fi
+            else
+              fallos=$((fallos + 1))
+              echo "el monitoreo falló ($fallos seguidos)"
+              # Tres seguidos no es un tropiezo: se corta para que el fallo se vea y la cadena
+              # releve con un proceso limpio.
+              if [ "$fallos" -ge 3 ]; then
+                echo "::endgroup::"
+                exit 1
+              fi
+            fi
+            echo "::endgroup::"
+            # Con `if` y no con `&&`: en la última vuelta la condición es falsa y, siendo el
+            # último comando del bucle, su estado 1 haría fallar el paso entero.
+            if [ "$i" -lt "$VUELTAS" ]; then sleep "$PAUSA"; fi
+          done
+
+      # Mismo relevo que la predicción: un `workflow_dispatch` sí se ejecuta siempre, y al salir
+      # desde dentro del job queda en cola y arranca en cuanto este termina.
+      - name: Encadenar la sesión siguiente
+        if: always() && vars.PIPELINE_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 60
+          gh workflow run collect-and-monitor.yml --repo "${{ github.repository }}"
