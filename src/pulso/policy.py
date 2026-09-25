@@ -46,7 +46,12 @@ class RetrainRules:
     # veces en 10 horas sin que el modelo se hubiera degradado, solo porque la competencia entró en
     # horas difíciles. El margen sobre el perfil de la MISMA ventana sí es comparable: cancela la
     # dificultad de la ventana y aísla lo que aporta el modelo.
-    margin_drop_pts: float = 1.0
+    # Piso ABSOLUTO del margen sobre el perfil. No se compara contra la referencia de validacion
+    # porque son distribuciones distintas: medido, el margen de validacion es +1,25 y el de
+    # competencia +1,96, asi que un umbral relativo exigiria una caida de 1,7 para reaccionar.
+    # Lo que importa es si el modelo sigue aportando, y eso se lee directo: por debajo de medio
+    # punto sobre el perfil, el GBM ya no paga lo que cuesta.
+    min_margin_pts: float = 0.5
     # Se conserva por compatibilidad con la señal vieja cuando no hay margen disponible.
     performance_drop_pts: float = 3.0
     # Candidatos rechazados seguidos tras los cuales se deja de reentrenar y se investiga.
@@ -107,9 +112,8 @@ def performance_signal(state: MonitorState, rules: RetrainRules) -> bool:
     Se prefiere el margen sobre el perfil de la misma ventana, que es lo único comparable con la
     referencia. Si no hay margen (monitor viejo, baseline sin calcular) se cae a la regla anterior.
     """
-    if state.reference_margin is not None and len(state.margins) >= rules.persistence:
-        limit = state.reference_margin - rules.margin_drop_pts
-        return all(m < limit for m in state.margins[-rules.persistence:])
+    if len(state.margins) >= rules.persistence:
+        return all(m < rules.min_margin_pts for m in state.margins[-rules.persistence:])
     if state.reference_accuracy is None or len(state.rolling_accuracies) < rules.persistence:
         return False
     limit = state.reference_accuracy - rules.performance_drop_pts

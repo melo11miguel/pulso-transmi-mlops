@@ -100,8 +100,9 @@ def test_a_harder_window_does_not_look_like_degradation():
     por construccion y la senal disparo 22 veces en 10 horas sin degradacion real. El margen sobre
     el perfil de la MISMA ventana cancela la dificultad: si el perfil tambien baja, no hay senal.
     """
+    # Medido en competencia: margen real +1,96, muy por encima del piso.
     duro = _state(reference_accuracy=87.14, rolling_accuracies=[83.5] * 4,
-                  reference_margin=1.25, margins=[1.30, 1.28, 1.22, 1.31])
+                  reference_margin=1.25, margins=[1.96, 1.88, 2.05, 1.91])
     assert not performance_signal(duro, RetrainRules())
     assert decide_retrain(duro).decision == "keep"
 
@@ -109,7 +110,7 @@ def test_a_harder_window_does_not_look_like_degradation():
 def test_a_real_degradation_still_fires_with_margins():
     """Si el modelo deja de aportar sobre el perfil, la senal debe seguir disparando."""
     malo = _state(reference_accuracy=87.14, rolling_accuracies=[83.5] * 4,
-                  reference_margin=1.25, margins=[0.05, -0.10, 0.02, -0.20])
+                  reference_margin=1.25, margins=[0.05, -0.10, 0.02, -0.20])  # ya no aporta
     assert performance_signal(malo, RetrainRules())
     assert decide_retrain(malo).decision == "retrain"
 
@@ -564,6 +565,53 @@ def test_predict_batch_names_the_missing_features(trained):
         futuro.predict_next(wide)
     assert exc.value.missing == ["variable_del_futuro"]
     assert "más nuevo que el código" in str(exc.value)
+
+
+def test_level_correction_moves_predictions_toward_the_recent_level(trained):
+    """Si la ultima hora viene por encima del perfil, la correccion sube la prediccion."""
+    import pulso.predict as P
+
+    wide, model = trained
+    cycle = _cycle(wide)
+    alto = wide.copy()
+    alto.iloc[-4:] = alto.iloc[-4:] * 1.5              # ultima hora un 50 % por encima
+    # La MISMA historia en las dos ramas: si se cambiara solo en una, tambien cambiaria la
+    # prediccion del GBM (usa los residuales recientes) y la razon no aislaria la correccion.
+    sin_corregir = P.COEF_NIVEL
+    try:
+        P.COEF_NIVEL = 0.0
+        base, _ = build_predictions(model, alto, cycle)
+        P.COEF_NIVEL = 0.40
+        con, _ = build_predictions(model, alto, cycle)
+    finally:
+        P.COEF_NIVEL = sin_corregir
+    assert (con["value"].to_numpy() > base["value"].to_numpy()).all()
+    # Y con tope. La tolerancia relativa es por el `round(value, 3)` de la salida: sobre valores
+    # de decenas, ese redondeo mueve la razon en ~1e-5, mas que un 1e-6 absoluto.
+    assert (con["value"].to_numpy()
+            <= base["value"].to_numpy() * np.exp(P.TOPE_NIVEL) * (1 + 1e-4)).all()
+
+
+def test_level_correction_is_capped(trained):
+    """Una rafaga absurda no puede mover la prediccion mas alla del tope."""
+    import pulso.predict as P
+
+    wide, model = trained
+    cycle = _cycle(wide)
+    delirante = wide.copy()
+    delirante.iloc[-4:] = delirante.iloc[-4:] * 100
+    sin_corregir = P.COEF_NIVEL
+    try:
+        P.COEF_NIVEL = 0.0
+        base, _ = build_predictions(model, delirante, cycle)
+        P.COEF_NIVEL = 0.40
+        con, _ = build_predictions(model, delirante, cycle)
+    finally:
+        P.COEF_NIVEL = sin_corregir
+    razon = con["value"].to_numpy() / base["value"].to_numpy()
+    # Tolerancia relativa por el redondeo a 3 decimales de la salida, no por holgura del tope.
+    assert razon.max() <= np.exp(P.TOPE_NIVEL) * (1 + 1e-4)
+    assert razon.max() > np.exp(P.TOPE_NIVEL) * 0.99, "la rafaga deberia saturar el tope"
 
 
 def test_build_predictions_rejects_history_beyond_the_cutoff(trained):
