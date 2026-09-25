@@ -736,6 +736,9 @@ def _build_world(competition, *, actual_transform=None, trained_at="2026-09-01T0
     registry = ModelRegistry(db)
     train_and_register(history, registry, config=FAST, rules=LENIENT, git_commit="9" * 40)
     db.tables["model_versions"][0]["trained_at"] = trained_at
+    # El enfriamiento se ancla al ultimo INTENTO de entrenamiento, no al del champion, asi que el
+    # mundo falso tiene que mover las dos fechas para representar "se entreno hace poco".
+    db.tables["model_versions"][0]["created_at"] = trained_at
     _, model = registry.load_champion()
 
     # observaciones nuevas (la «competencia») y predicciones oficiales para cada hora en punto
@@ -854,6 +857,36 @@ def test_monitor_uses_only_official_predictions(competition):
     for sub in db.tables["submissions"]:
         sub["is_official"] = False
     assert load_scored(db).empty
+
+
+def test_cooldown_counts_from_the_last_attempt_not_from_the_champion(competition):
+    """El enfriamiento se ancla al ultimo INTENTO, no al entrenamiento del champion.
+
+    Con la puerta honesta, un refresco de pura cadencia da ganancia ~0 y se rechaza, asi que el
+    champion no cambia. Anclando el contador a el, nunca se reinicia y el enfriamiento no entra
+    jamas: medido en produccion, 22 entrenamientos en 10 horas, todos rechazados por lo mismo.
+    """
+    def collapse(new):
+        new = new.copy()
+        new.iloc[-2 * 96:] *= 0.4
+        return new
+
+    viejo = (pd.Timestamp(NOW) - pd.Timedelta(days=5)).isoformat()
+    db, registry, _ = _build_world(competition, actual_transform=collapse, trained_at=viejo)
+    version = registry.champion()["version"]
+    for _ in range(3):
+        db.insert("metric_snapshots", {"window_name": "rolling_24h", "model_version": version,
+                                       "accuracy": 40.0})
+
+    # El champion es viejo, pero acaba de intentarse un candidato que fue rechazado.
+    db.tables["model_versions"].append({
+        "version": "candidato-rechazado", "status": "rejected",
+        "created_at": (pd.Timestamp(NOW) - pd.Timedelta(minutes=20)).isoformat(),
+        "trained_at": (pd.Timestamp(NOW) - pd.Timedelta(minutes=20)).isoformat(),
+    })
+    result = run_monitor(db, registry, now=NOW)
+    assert result["decision"] == "investigate" and "enfriamiento" in result["reason"], (
+        "un intento reciente debe frenar el siguiente aunque el champion siga siendo viejo")
 
 
 def test_monitor_cooldown_after_recent_training(competition):
