@@ -1,0 +1,359 @@
+===============================================================================
+PULSO TRANSMI - INFORME TECNICO DEL SISTEMA MLOps
+Miguel Angel Melo Rinta - Universidad Externado de Colombia
+Repositorio: https://github.com/melo11miguel/pulso-transmi-mlops
+Dashboard:   https://pulso-transmi-dashboard.vercel.app
+Corte de este informe: 2026-09-25
+===============================================================================
+
+1. EL PROBLEMA
+-------------------------------------------------------------------------------
+Pronosticar la demanda de pasajeros de 12 estaciones de TransMilenio a +15, +30,
++45 y +60 minutos. Cada hora abre un ciclo con una ventana de 25 minutos para
+entregar 48 predicciones (12 estaciones x 4 horizontes).
+
+La metrica oficial, por estacion:
+
+    WAPE     = suma|real - pred| / suma(real)
+    Accuracy = 100 x max(0, 1 - WAPE)
+
+y luego se promedian las 12 estaciones SIN ponderar.
+
+Dos consecuencias de esa definicion gobiernan todo el diseno:
+
+  (a) Un target no entregado cuenta como prediccion CERO. No es que no sume:
+      resta. En la practica, accuracy_marcada ~= accuracy_real x cobertura.
+      Por eso la disciplina operativa pesa mas que el modelo.
+
+  (b) Al promediar sin ponderar, una estacion pequena pesa igual que una
+      grande. Movistar Arena mueve ~1.700 pasajeros por ventana y Ricaurte
+      ~13.500, y valen lo mismo en la nota.
+
+
+2. ARQUITECTURA
+-------------------------------------------------------------------------------
+Cinco responsabilidades separadas, cada una con su propio workflow, para que el
+fallo de una no arrastre a las demas:
+
+    API del reto  ->  ingest     ->  Supabase (memoria de datos)
+                                        |
+                       train  <---------+---------> predict -> API (entrega)
+                                        |
+                                     monitor  ->  decide reentrenar
+                                        |
+                                    dashboard (Vercel, solo lectura)
+
+Codigo: 23 modulos, 2.713 lineas en src/pulso.
+Pruebas: 144 funciones, 171 casos (pytest), 2.080 lineas.
+Infraestructura: 6 workflows de GitHub Actions, 7 migraciones de Supabase.
+Historia: 21 commits.
+
+Modulos principales
+    api.py         cliente HTTP del reto; la API key solo viaja en Authorization
+    ingest.py      recoleccion incremental con cursor
+    features.py    perfil estacional y construccion de variables
+    model.py       modelo de produccion (perfil + gradient boosting)
+    backtest.py    validacion temporal por ventanas
+    train.py       entrenamiento, prueba de humo y registro del candidato
+    registry.py    versionado y promocion de modelos
+    predict.py     inferencia y entrega idempotente
+    monitor.py     evaluacion, drift y ruido por estacion
+    monitor_job.py trabajo de monitoreo y captura del leaderboard
+    policy.py      reglas de promocion y reentrenamiento
+    supa.py        cliente de Supabase
+
+
+3. DATOS
+-------------------------------------------------------------------------------
+Estado actual en Supabase: 55.884 observaciones de 12 estaciones.
+
+La recoleccion es incremental y idempotente. La escritura y el avance del cursor
+ocurren en una sola funcion SQL (ingest_observations): el cursor solo avanza
+despues de confirmar la escritura, asi que una ejecucion interrumpida se repite
+sin duplicar ni perder nada.
+
+Hay dos caminos que recolectan a proposito: un workflow dedicado cada 20 minutos
+y la propia sesion de prediccion justo antes de cada entrega. Repetir es
+inofensivo por la idempotencia, y protege contra que GitHub descarte un disparo.
+
+Calidad verificada antes de modelar (reports/eda.md): rejilla completa de 15
+minutos sin huecos, sin duplicados, sin valores negativos, y el perfil semanal
+coincide con la realidad urbana (picos 06:30-07:30 y 17:00-18:00, valle a las
+02:00, fines de semana mas planos).
+
+
+4. EL MODELO
+-------------------------------------------------------------------------------
+Perfil estacional + correccion por gradient boosting.
+
+  Perfil:     media logaritmica por (estacion, hora de la semana), calculada con
+              leave-one-out dentro de la ventana de ajuste para que el propio
+              valor no entre en su media.
+  Correccion: HistGradientBoostingRegressor con perdida L1 sobre el residual
+              logaritmico.
+
+Por que L1 en espacio logaritmico: WAPE se minimiza con la MEDIANA condicional,
+no con la media. La L1 en log da la mediana, y al exponenciar se conserva. Esto
+explica una observacion que al principio parecia un defecto: predecimos ~1,3 %
+por debajo de la media. No es un sesgo a corregir, es el optimo de la metrica.
+Se comprobo: corregir ese sesgo fuera de muestra EMPEORA el resultado.
+
+Variables (20): estacion, horizonte, franja, dia, hora de la semana, seno y
+coseno de la franja, perfil en origen y objetivo, su diferencia, la CURVATURA
+del perfil, cuatro rezagos del residual, tres medias moviles y dos agregados de
+ciudad.
+
+Validacion temporal, siempre entrenando con el pasado y evaluando semanas
+posteriores. Nunca particiones aleatorias.
+
+
+5. LA ULTIMA MEJORA: LA CURVATURA DEL PERFIL
+-------------------------------------------------------------------------------
+Diagnostico: las peores horas eran las rampas (amanecer y caida de la tarde).
+El perfil es escalonado por hora de la semana, asi que su segunda diferencia en
+el instante objetivo marca DONDE va a quebrarse. Esa era la senal que faltaba.
+
+Resultados (accuracy de validacion):
+
+    Particion              sin p_curv   con p_curv   folds ganados
+    3 folds de 7 dias         87,23       87,65          3 de 3
+    5 folds de 5 dias         87,41       87,83          5 de 5
+    4 folds de 7 dias           -           -            4 de 4
+    Camino real de produccion 86,76       87,14          +0,377
+
+Ocho de ocho folds en tres particiones distintas, mas la simulacion del camino
+real de produccion origen por origen con historia truncada.
+
+Contrafactual en competencia: se corrio el modelo anterior sobre los MISMOS 360
+targets que predijo el nuevo. Gana en 7 de 8 ciclos, +0,54 puntos.
+
+Detalle que costo entender y que conviene dejar escrito: la curvatura debe
+calcularse con el MISMO perfil que p_target, es decir el de leave-one-out
+durante el entrenamiento. Con el perfil llano la variable correlaciona 0,00 con
+el objetivo en entrenamiento y +0,27 en produccion; el modelo aprende a
+ignorarla y luego no sabe usarla. Esa variante pierde 0,45 puntos. En validacion
+ambas formulas dan exactamente el mismo numero.
+
+
+6. EXPERIMENTOS DESCARTADOS CON EVIDENCIA
+-------------------------------------------------------------------------------
+Se documentan porque el trabajo descartado tambien es resultado:
+
+    Ponderar el entrenamiento por demanda            -0,09
+    Corregir el sesgo por estacion (fuera de muestra) -0,61
+    Factor de calibracion global                     -0,02
+    Rezagos largos r4-r7                             +0,01
+    Residual del corredor                            +0,00
+    Estacionalidad dia/semana anterior               -0,48
+    Siete variantes de hiperparametros          mejor +0,07
+    Usar /v1/context           la API no lo publica en competencia
+    Ponderar semanas recientes por vida media        empeora
+
+El caso de la ponderacion por demanda merece mencion: la teoria la respalda
+(WAPE equivale a una L1 ponderada por demanda), pero concentra el entrenamiento
+en la hora pico y la varianza que introduce supera la ganancia de alineacion.
+
+
+7. TECHO DE PRECISION
+-------------------------------------------------------------------------------
+La demanda se genera con una binomial negativa: hay ruido irreducible.
+
+    Techo teorico (ajustando y evaluando sobre los mismos datos):   89,0 %
+    Perfil leave-one-out honesto:                                   87,0 %
+    Nuestro modelo en validacion temporal:                          87,65 %
+    WAPE irreducible:                                               0,109
+
+Nota honesta: ese techo se midio sobre el historico de julio-septiembre. Un
+competidor alcanza 84,56 sobre los mismos targets donde nosotros sacamos 83,54,
+lo que indica que el margen restante NO es del techo sino nuestro. Queda
+pendiente re-medir el techo sobre el periodo de competencia.
+
+
+8. OPERACION: LA COBERTURA ES LA PALANCA
+-------------------------------------------------------------------------------
+Hallazgo central del proyecto, medido: el programador de GitHub Actions DESCARTA
+la mayoria de las ejecuciones programadas. El workflow pedia correr cada 10
+minutos y en tres dias arranco siete veces, con huecos de hasta 5 horas.
+
+Un cron que despierta, mira y se va no sirve: la ventana de entrega dura 25
+minutos y el cron rara vez cae dentro.
+
+Solucion en tres capas:
+
+  1. SESIONES LARGAS. El job no hace una entrega y termina: se queda 5,5 horas
+     (el limite de GitHub son 6 h) entregando cada ciclo que abra.
+
+  2. RELEVO ENCADENADO. Cada sesion dispara la siguiente con workflow_dispatch
+     desde dentro del propio job, asi queda en cola y arranca en el instante en
+     que la anterior termina. Un dispatch SI se ejecuta siempre. Lleva
+     if: always() para relevar tambien despues de un fallo, que es cuando mas
+     falta hace.
+
+  3. CONCURRENCIA. Un grupo por workflow garantiza que nunca haya dos a la vez.
+
+El monitoreo usa el mismo patron: once vueltas de 30 minutos y encadena.
+
+IDEMPOTENCIA. La llave de idempotencia se deriva del CONTENIDO de la entrega
+(ciclo + modelo + hash de las predicciones), no del identificador de ejecucion.
+Asi, si un proceso muere despues del POST pero antes de registrar el recibo, el
+reintento reconoce la entrega y no duplica.
+
+
+9. MONITOREO Y REENTRENAMIENTO
+-------------------------------------------------------------------------------
+El monitor evalua las predicciones ya resueltas, calcula drift de nivel por
+estacion y decide si reentrenar.
+
+Umbrales calibrados con el RUIDO PROPIO de cada estacion, no con un numero fijo
+igual para todas: una estacion pequena oscila mas y un umbral unico la senalaria
+siempre.
+
+Reglas (policy.py):
+    caida de rendimiento        3,0 puntos sostenidos 4 evaluaciones
+    drift de nivel              12 evaluaciones seguidas
+    datos nuevos minimos        12 horas
+    enfriamiento                6 horas entre reentrenamientos
+    cobertura minima            0,95
+    retraso del recolector      90 minutos
+
+Las senales operativas tienen PRIORIDAD sobre las de rendimiento: si la
+cobertura cae o el recolector se atrasa, la decision es "investigar", no
+"reentrenar". Reentrenar con datos incompletos es peor que no hacer nada.
+
+PROMOCION. Un candidato solo reemplaza al champion si lo supera por al menos
+0,2 puntos en validacion temporal y pasa una prueba de humo. De 7 versiones
+registradas, 2 se promovieron y 5 se rechazaron por mejora insuficiente. El
+cambio de champion es atomico (funcion SQL promote_model), asi que nunca hay dos
+champions ni ninguno.
+
+
+10. RESULTADOS EN COMPETENCIA
+-------------------------------------------------------------------------------
+Al corte de este informe:
+
+    Entregas aceptadas:            58
+    Ciclos vistos / entregados:    58 / 57
+    Targets evaluados:             2.736
+    Accuracy real (sobre lo entregado):  84,73 %
+    Modelo en produccion:          gbm-20260912T0600Z-5c69205
+
+    Ventana 24 h:    puesto 11 de 32, accuracy 81,26, cobertura 0,917
+    Acumulada:       puesto  4 de 32, accuracy 59,31, cobertura 0,667
+
+La brecha entre el 84,73 % real y el 81,26 % marcado es exactamente el efecto de
+la cobertura. Se llego a estar PRIMEROS en la ventana de 24 horas con 86,08 % y
+cobertura 1,00.
+
+La cobertura acumulada de 0,667 tiene una causa que no se puede revertir: el
+pipeline entro en operacion cuando la competencia ya llevaba ciclos corridos, y
+los targets de esos ciclos cuentan como cero para siempre.
+
+
+11. INCIDENTE DEL 2026-09-24 (postmortem)
+-------------------------------------------------------------------------------
+Se documenta porque es la leccion mas util del proyecto.
+
+QUE PASO. Se promovio un champion con una variable nueva (p_curv) a las 16:45
+mientras corria una sesion de prediccion iniciada a las 15:15 con el codigo
+ANTERIOR. El registro entrega el champion en cada ciclo, asi que esa sesion
+cargo el modelo nuevo; su build_features no sabia construir p_curv y reventaba
+con KeyError. El error era PERMANENTE pero se reintentaba como transitorio:
+cinco intentos identicos y la sesion murio. La siguiente tardo 1 h 33 en
+arrancar porque dependia del cron.
+
+IMPACTO. Dos ciclos perdidos (07:00Z y 08:00Z). Cobertura de 24 h de 1,00 a
+0,917. Puesto del 1 al 11. El accuracy real no se movio: el modelo no tuvo nada
+que ver.
+
+POR QUE NO SE DETECTO A TIEMPO. El KPI "ciclos perdidos" del dashboard mostraba
+CERO mientras pasaba, porque solo contaba los estados 'missed' y 'error' y el
+ciclo quedo en 'seen'. El indicador fallo justo cuando mas importaba.
+
+CORRECCIONES, UNA POR CADA COSA QUE FALLO:
+
+  1. predict_batch compara lo que pide el artefacto contra las variables que el
+     codigo sabe construir y corta con FeatureMismatchError, que nombra lo que
+     falta y dice que el despliegue esta viejo.
+
+  2. La inferencia atrapa ese error y entrega el PERFIL ESTACIONAL, que vive en
+     el mismo artefacto y no necesita variables construidas. Entregar peor es
+     mucho mejor que no entregar.
+
+  3. El contador de ciclos perdidos ahora cuenta todo ciclo ya cerrado que no
+     quedo entregado (migracion 0007).
+
+  4. El relevo dejo de depender del cron (seccion 8, capa 2). Con la cadena, el
+     hueco de 1 h 33 habria sido de un minuto.
+
+Dos pruebas de regresion fijan el comportamiento: una verifica que un artefacto
+con una variable desconocida sigue cubriendo los 12 targets por el perfil, y
+otra que el error nombra lo que falta.
+
+LECCION GENERAL: un artefacto de modelo y el codigo que lo ejecuta son dos
+versiones distintas que pueden desincronizarse. El registro debe declarar sus
+requisitos y el ejecutor debe degradar, no morir.
+
+
+12. SEGURIDAD Y PRIVACIDAD
+-------------------------------------------------------------------------------
+- Las credenciales viven solo en GitHub Actions Secrets. Ninguna esta en el
+  repositorio ni llega al navegador.
+- El dashboard es una pagina ESTATICA que solo puede ejecutar dos funciones
+  agregadas de Supabase con la clave publicable. Verificado: las seis tablas y
+  la funcion interna responden 401 con esa clave.
+- Las funciones publicas son security definer y devuelven solo agregados.
+- No se almacenan ni publican nombres de otros participantes: de la tabla del
+  leaderboard solo se guarda nuestra posicion y el mejor accuracy de la cohorte
+  como referencia numerica.
+- El SDK del profesor incluyo por error documentacion docente y la retiro. Ese
+  contenido sigue en el historial de git y NO se consulto.
+
+
+13. DASHBOARD (BONO)
+-------------------------------------------------------------------------------
+https://pulso-transmi-dashboard.vercel.app
+
+Pagina estatica, sin servidor y sin secretos, que se refresca cada minuto:
+accuracy real y su serie por hora, puesto y cobertura, salud del pipeline,
+precision por horizonte y por estacion, drift de nivel, estado operativo,
+historial de versiones con el motivo de cada decision, y un MAPA 3D de la red.
+
+El mapa 3D dibuja las 12 estaciones en su posicion geografica real (proyectadas
+a kilometros corrigiendo la longitud por el coseno de la latitud) con la altura
+igual a la demanda promedio a esa hora, y un reproductor que recorre el dia en
+franjas de media hora. Se puede girar, acercar y desplazar. El color alterna
+entre intensidad de demanda y precision del modelo por estacion.
+
+La grafica de accuracy dibuja ademas una media movil de 6 horas, porque la
+referencia de la cohorte es un agregado y comparar contra la serie cruda hora a
+hora hacia leer como caidas del modelo lo que es el vaiven de la hora del dia.
+
+Se vigila el SDK del profesor cada 12 horas con un workflow que abre un issue si
+el contenido cambia. Compara contenido y no historial: el 2026-09-24 el profesor
+subio cuatro commits cuyo efecto neto era cero.
+
+
+14. COMO REPRODUCIRLO
+-------------------------------------------------------------------------------
+    python -m venv .venv && . .venv/bin/activate
+    pip install -r requirements.txt && pip install -e .
+    cp .env.example .env          # y completar credenciales
+    pytest                        # 171 casos
+    python -m pulso.ingest        # recolectar
+    python -m pulso.train         # entrenar y registrar candidato
+    python -m pulso.predict --dry-run   # inferencia sin enviar
+    python -m pulso.monitor_job   # evaluar y decidir
+
+Interruptor general: la variable de repositorio PIPELINE_ENABLED. Si no esta en
+"true", ningun workflow programado opera y la cadena de relevos no continua.
+
+
+15. PENDIENTE
+-------------------------------------------------------------------------------
+- Re-medir el techo de ruido sobre el periodo de competencia (seccion 7).
+- Investigar el horizonte corto: +15 min solo supera a +60 min por 1,76 puntos,
+  poca diferencia para una serie que se observa cada 15 minutos.
+- Las estaciones pequenas arrastran el promedio sin ponderar (seccion 1b).
+- Rotar la API key y la clave de servicio de Supabase al cerrar el proyecto.
+
+===============================================================================
