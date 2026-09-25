@@ -13,7 +13,7 @@ from test_features import FAST, synthetic_wide
 
 from pulso.api import PulsoApi, PulsoApiError
 from pulso.features import Profile
-from pulso.model import FeatureMismatchError, GbmResidualModel
+from pulso.model import FeatureMismatchError, GbmResidualModel, ModelConfig
 from pulso.monitor import (
     baseline_accuracy,
     level_noise,
@@ -318,6 +318,76 @@ def test_train_first_run_promotes_and_second_identical_run_does_not(fake_db):
     statuses = {r["version"]: r["status"] for r in fake_db.tables["model_versions"]}
     assert statuses[second.version] == "rejected"
     assert second.champion_accuracy is not None
+
+
+def test_the_gate_never_scores_the_champion_on_data_it_trained_on(fake_db, monkeypatch):
+    """Garantia (a): el champion se juzga por un gemelo entrenado en `train_part`, no por su artefacto.
+
+    Antes se evaluaba el artefacto tal cual, y como se habia entrenado con datos que caen dentro
+    de la ventana de validacion, competia en casa. Medido en produccion: bloqueo cinco candidatos
+    seguidos con gaps que se encogian a medida que la ventana se alejaba de su fecha de
+    entrenamiento.
+    """
+    import pulso.train as T
+
+    wide = synthetic_wide(days=30)
+    registry = ModelRegistry(fake_db)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="a" * 40)
+
+    entrenados = []
+    real_fit = GbmResidualModel.fit
+
+    def espia(self, datos):
+        entrenados.append(datos.index[-1])
+        return real_fit(self, datos)
+
+    monkeypatch.setattr(GbmResidualModel, "fit", espia)
+    fold = T.holdout_fold(wide)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="b" * 40)
+
+    # Ningun modelo usado para comparar puede haberse entrenado dentro de la ventana de validacion.
+    comparadores = [t for t in entrenados if t != wide.index[-1]]
+    assert comparadores, "se esperaban gemelos entrenados antes del fold"
+    assert all(t <= fold.train_end for t in comparadores)
+
+
+def test_both_twins_share_the_same_train_part(fake_db, monkeypatch):
+    """Garantia (b): gemelo del candidato y gemelo del champion ven exactamente los mismos datos."""
+    import pulso.train as T
+
+    wide = synthetic_wide(days=30)
+    registry = ModelRegistry(fake_db)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="a" * 40)
+
+    cortes = []
+    real_fit = GbmResidualModel.fit
+
+    def espia(self, datos):
+        cortes.append((datos.index[0], datos.index[-1], len(datos)))
+        return real_fit(self, datos)
+
+    monkeypatch.setattr(GbmResidualModel, "fit", espia)
+    fold = T.holdout_fold(wide)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="b" * 40)
+
+    gemelos = [c for c in cortes if c[1] == fold.train_end]
+    assert len(gemelos) == 2, f"se esperaban dos gemelos, hubo {len(gemelos)}"
+    assert gemelos[0] == gemelos[1], "los gemelos no comparten train_part"
+
+
+def test_champion_twin_keeps_the_champion_recipe(fake_db):
+    """La receta del champion se reconstruye sin regalarle variables que no usaba."""
+    import pulso.train as T
+    from pulso.features import FEATURE_COLUMNS
+
+    viejo = GbmResidualModel(ModelConfig(drop_features=("p_curv",)))
+    viejo.feature_columns = [c for c in FEATURE_COLUMNS if c != "p_curv"]
+    receta = T.receta_del_champion(viejo)
+    assert receta is not None and "p_curv" in receta.drop_features
+
+    futuro = GbmResidualModel(ModelConfig())
+    futuro.feature_columns = [*futuro.feature_columns, "variable_que_no_existe"]
+    assert T.receta_del_champion(futuro) is None, "sin gemelo posible, la puerta lo trata como ausente"
 
 
 def test_train_validation_metadata_is_recorded(fake_db):

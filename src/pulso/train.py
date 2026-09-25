@@ -4,8 +4,15 @@ Flujo: entrena con todos los datos → valida con un «gemelo» entrenado hasta 
 evaluado en esos 7 días (validación temporal) → compara con el baseline de perfil y con el champion
 sobre la MISMA ventana → prueba de humo de inferencia → registra → promueve o rechaza.
 
-Nota de justicia: el champion puede haber visto parte de la ventana de validación (si se entrenó
-después de su inicio). Eso lo favorece, así que la regla es conservadora con los candidatos.
+La puerta compara RECETAS, no artefactos. Para juzgar al champion se reentrena un gemelo suyo,
+con su misma configuración y variables, sobre el mismo `train_part` que el gemelo del candidato.
+Evaluar el artefacto del champion tal cual lo favorecía: se entrenó con datos que caen dentro de
+la ventana de validación, así que competía en casa. Medido en este repositorio, ese sesgo bloqueó
+cinco candidatos seguidos con gaps de -0,27, -0,23, -0,21 y -0,10 que se encogían justo a medida
+que la ventana se alejaba de su fecha de entrenamiento.
+
+Consecuencia buscada: un reentrenamiento de puro refresco (mismo código, datos más nuevos) da
+ganancia ~0 y no promueve. El refresco del artefacto es otra decisión y va por cadencia fija.
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -22,7 +29,7 @@ from .backtest import Fold, hourly_origins, score_predictions, summarize
 from .baselines import ProfileMean
 from .config import Settings
 from .dbdata import load_wide
-from .features import HORIZONS, STEP
+from .features import FEATURE_COLUMNS, HORIZONS, STEP
 from .model import GbmResidualModel, ModelConfig
 from .policy import PromotionRules, decide_promotion
 from .registry import ModelRegistry, current_git_commit
@@ -80,6 +87,21 @@ def smoke_test(model: GbmResidualModel, wide: pd.DataFrame) -> tuple[bool, str]:
     return True, "ok"
 
 
+def receta_del_champion(champion: GbmResidualModel) -> ModelConfig | None:
+    """Reconstruye la configuración del champion para reentrenarlo con el código de hoy.
+
+    Devuelve None si el champion pide variables que este código ya no construye: ahí no se puede
+    fabricar un gemelo comparable y la puerta lo trata como si no hubiera champion.
+    """
+    desconocidas = [c for c in champion.feature_columns if c not in FEATURE_COLUMNS]
+    if desconocidas:
+        return None
+    # Las que el código de hoy sabe construir pero el champion no usaba: se descartan para que el
+    # gemelo tenga exactamente su receta y no una versión mejorada de ella.
+    sobrantes = tuple(c for c in FEATURE_COLUMNS if c not in champion.feature_columns)
+    return replace(champion.config, drop_features=sobrantes)
+
+
 def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
                        config: ModelConfig | None = None, reason: str = "manual",
                        git_commit: str | None = None,
@@ -96,14 +118,23 @@ def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
     baseline_val = evaluate(ProfileMean().fit(train_part), wide, fold)
 
     champion_row = registry.champion()
-    champion_acc, parent = None, None
+    champion_acc, parent, comparacion = None, None, "sin champion"
     if champion_row:
         parent = champion_row["version"]
         try:
             champion = registry.load(parent)
-            champion_acc = evaluate(champion, wide, fold)["accuracy"]
+            receta = receta_del_champion(champion)
+            if receta is None:
+                comparacion = "champion con variables desconocidas: tratado como ausente"
+                log.warning("El champion %s pide variables que este código no construye (%s); "
+                            "la puerta lo trata como ausente", parent, champion.feature_columns)
+            else:
+                gemelo_champion = GbmResidualModel(receta).fit(train_part)
+                champion_acc = evaluate(gemelo_champion, wide, fold)["accuracy"]
+                comparacion = "gemelo del champion sobre el mismo train_part"
         except Exception:  # noqa: BLE001 - un champion ilegible no debe bloquear el reemplazo
-            log.exception("No se pudo evaluar al champion %s; se trata como ausente", parent)
+            comparacion = "no se pudo reentrenar el gemelo: tratado como ausente"
+            log.exception("No se pudo reentrenar el gemelo del champion %s", parent)
 
     final = GbmResidualModel(config).fit(wide)
     smoke_ok, smoke_msg = smoke_test(final, wide)
@@ -115,7 +146,8 @@ def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
         "by_horizon": candidate_val["by_horizon"], "by_station": candidate_val["by_station"],
         "n_targets": candidate_val["n_targets"],
         "baseline_profile_only_accuracy": baseline_val["accuracy"],
-        "champion_accuracy_same_window": champion_acc, "smoke_test": smoke_msg,
+        "champion_twin_accuracy": champion_acc, "comparacion": comparacion,
+        "smoke_test": smoke_msg,
         "decision": "promote" if promote else "reject", "decision_reason": why,
     }
     row = registry.register_candidate(final, validation=validation, git_commit=git_commit,
