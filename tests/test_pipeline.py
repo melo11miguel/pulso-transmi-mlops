@@ -13,7 +13,7 @@ from test_features import FAST, synthetic_wide
 
 from pulso.api import PulsoApi, PulsoApiError
 from pulso.features import Profile
-from pulso.model import FeatureMismatchError, GbmResidualModel
+from pulso.model import FeatureMismatchError, GbmResidualModel, ModelConfig
 from pulso.monitor import (
     baseline_accuracy,
     level_noise,
@@ -90,6 +90,36 @@ def test_threshold_is_strict_below_reference_minus_drop():
     on_edge = _state(rolling_accuracies=[84.0] * 4)  # 87 - 3 = 84: no es «por debajo»
     assert decide_retrain(on_edge).decision == "keep"
     assert decide_retrain(_state(rolling_accuracies=[83.99] * 4)).decision == "retrain"
+
+
+def test_a_harder_window_does_not_look_like_degradation():
+    """El accuracy de competencia y el de validacion no son comparables.
+
+    Medido en produccion: la referencia de validacion era 87,14 y el accuracy real de competencia
+    83,5 porque el reloj entro en horas dificiles. La diferencia de 3,6 superaba el umbral de 3,0
+    por construccion y la senal disparo 22 veces en 10 horas sin degradacion real. El margen sobre
+    el perfil de la MISMA ventana cancela la dificultad: si el perfil tambien baja, no hay senal.
+    """
+    # Medido en competencia: margen real +1,96, muy por encima del piso.
+    duro = _state(reference_accuracy=87.14, rolling_accuracies=[83.5] * 4,
+                  reference_margin=1.25, margins=[1.96, 1.88, 2.05, 1.91])
+    assert not performance_signal(duro, RetrainRules())
+    assert decide_retrain(duro).decision == "keep"
+
+
+def test_a_real_degradation_still_fires_with_margins():
+    """Si el modelo deja de aportar sobre el perfil, la senal debe seguir disparando."""
+    malo = _state(reference_accuracy=87.14, rolling_accuracies=[83.5] * 4,
+                  reference_margin=1.25, margins=[0.05, -0.10, 0.02, -0.20])  # ya no aporta
+    assert performance_signal(malo, RetrainRules())
+    assert decide_retrain(malo).decision == "retrain"
+
+
+def test_repeated_rejections_stop_the_retraining_loop():
+    """Reentrenar contra una puerta que rechaza todo refresco es trabajo perdido."""
+    atascado = _state(reference_margin=1.25, margins=[-0.5] * 4, rejected_in_a_row=3)
+    d = decide_retrain(atascado)
+    assert d.decision == "investigate" and "rechazados" in d.reason
 
 
 def test_level_drift_alone_triggers_retrain():
@@ -209,6 +239,29 @@ def test_baseline_accuracy_matches_profile_prediction():
     assert 80 < acc <= 100  # el perfil sobre datos sintéticos con ruido de 10 %
 
 
+def test_baseline_accuracy_is_timezone_safe():
+    """Los target_at llegan de Supabase en UTC; el perfil es funcion de la hora de la SEMANA.
+
+    Sin convertir a la zona de la rejilla queda desplazado cinco horas y el baseline se desploma.
+    Estuvo asi todo el proyecto: en produccion marcaba 12,15 donde el perfil real saca ~87, y el
+    test viejo no lo veia porque construia target_at desde wide.index, ya en la zona correcta.
+    """
+    wide = synthetic_wide(days=24)
+    profile = Profile().fit(wide.index[:20 * 96], np.log(wide.to_numpy()[:20 * 96]))
+    idx = wide.index[20 * 96:]
+    local = pd.concat([pd.DataFrame({"station_id": s, "target_at": idx,
+                                     "actual": wide.loc[idx, s].to_numpy(), "prediction": 1.0})
+                       for s in wide.columns], ignore_index=True)
+    utc = local.copy()
+    utc["target_at"] = pd.DatetimeIndex(utc["target_at"]).tz_convert("UTC")
+
+    a_local = baseline_accuracy(profile, wide, local, wide.index[-1], hours=48)
+    a_utc = baseline_accuracy(profile, wide, utc, wide.index[-1], hours=48)
+    assert a_utc == pytest.approx(a_local, abs=0.01), (
+        "el mismo instante expresado en otra zona debe dar el mismo baseline")
+    assert a_utc > 80
+
+
 # ------------------------------------------------------------------ estrés de drift
 def test_apply_drift_leaves_the_past_and_other_stations_untouched():
     wide = synthetic_wide(days=10)
@@ -318,6 +371,76 @@ def test_train_first_run_promotes_and_second_identical_run_does_not(fake_db):
     statuses = {r["version"]: r["status"] for r in fake_db.tables["model_versions"]}
     assert statuses[second.version] == "rejected"
     assert second.champion_accuracy is not None
+
+
+def test_the_gate_never_scores_the_champion_on_data_it_trained_on(fake_db, monkeypatch):
+    """Garantia (a): el champion se juzga por un gemelo entrenado en `train_part`, no por su artefacto.
+
+    Antes se evaluaba el artefacto tal cual, y como se habia entrenado con datos que caen dentro
+    de la ventana de validacion, competia en casa. Medido en produccion: bloqueo cinco candidatos
+    seguidos con gaps que se encogian a medida que la ventana se alejaba de su fecha de
+    entrenamiento.
+    """
+    import pulso.train as T
+
+    wide = synthetic_wide(days=30)
+    registry = ModelRegistry(fake_db)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="a" * 40)
+
+    entrenados = []
+    real_fit = GbmResidualModel.fit
+
+    def espia(self, datos):
+        entrenados.append(datos.index[-1])
+        return real_fit(self, datos)
+
+    monkeypatch.setattr(GbmResidualModel, "fit", espia)
+    fold = T.holdout_fold(wide)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="b" * 40)
+
+    # Ningun modelo usado para comparar puede haberse entrenado dentro de la ventana de validacion.
+    comparadores = [t for t in entrenados if t != wide.index[-1]]
+    assert comparadores, "se esperaban gemelos entrenados antes del fold"
+    assert all(t <= fold.train_end for t in comparadores)
+
+
+def test_both_twins_share_the_same_train_part(fake_db, monkeypatch):
+    """Garantia (b): gemelo del candidato y gemelo del champion ven exactamente los mismos datos."""
+    import pulso.train as T
+
+    wide = synthetic_wide(days=30)
+    registry = ModelRegistry(fake_db)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="a" * 40)
+
+    cortes = []
+    real_fit = GbmResidualModel.fit
+
+    def espia(self, datos):
+        cortes.append((datos.index[0], datos.index[-1], len(datos)))
+        return real_fit(self, datos)
+
+    monkeypatch.setattr(GbmResidualModel, "fit", espia)
+    fold = T.holdout_fold(wide)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="b" * 40)
+
+    gemelos = [c for c in cortes if c[1] == fold.train_end]
+    assert len(gemelos) == 2, f"se esperaban dos gemelos, hubo {len(gemelos)}"
+    assert gemelos[0] == gemelos[1], "los gemelos no comparten train_part"
+
+
+def test_champion_twin_keeps_the_champion_recipe(fake_db):
+    """La receta del champion se reconstruye sin regalarle variables que no usaba."""
+    import pulso.train as T
+    from pulso.features import FEATURE_COLUMNS
+
+    viejo = GbmResidualModel(ModelConfig(drop_features=("p_curv",)))
+    viejo.feature_columns = [c for c in FEATURE_COLUMNS if c != "p_curv"]
+    receta = T.receta_del_champion(viejo)
+    assert receta is not None and "p_curv" in receta.drop_features
+
+    futuro = GbmResidualModel(ModelConfig())
+    futuro.feature_columns = [*futuro.feature_columns, "variable_que_no_existe"]
+    assert T.receta_del_champion(futuro) is None, "sin gemelo posible, la puerta lo trata como ausente"
 
 
 def test_train_validation_metadata_is_recorded(fake_db):
@@ -442,6 +565,53 @@ def test_predict_batch_names_the_missing_features(trained):
         futuro.predict_next(wide)
     assert exc.value.missing == ["variable_del_futuro"]
     assert "más nuevo que el código" in str(exc.value)
+
+
+def test_level_correction_moves_predictions_toward_the_recent_level(trained):
+    """Si la ultima hora viene por encima del perfil, la correccion sube la prediccion."""
+    import pulso.predict as P
+
+    wide, model = trained
+    cycle = _cycle(wide)
+    alto = wide.copy()
+    alto.iloc[-4:] = alto.iloc[-4:] * 1.5              # ultima hora un 50 % por encima
+    # La MISMA historia en las dos ramas: si se cambiara solo en una, tambien cambiaria la
+    # prediccion del GBM (usa los residuales recientes) y la razon no aislaria la correccion.
+    sin_corregir = P.COEF_NIVEL
+    try:
+        P.COEF_NIVEL = 0.0
+        base, _ = build_predictions(model, alto, cycle)
+        P.COEF_NIVEL = 0.40
+        con, _ = build_predictions(model, alto, cycle)
+    finally:
+        P.COEF_NIVEL = sin_corregir
+    assert (con["value"].to_numpy() > base["value"].to_numpy()).all()
+    # Y con tope. La tolerancia relativa es por el `round(value, 3)` de la salida: sobre valores
+    # de decenas, ese redondeo mueve la razon en ~1e-5, mas que un 1e-6 absoluto.
+    assert (con["value"].to_numpy()
+            <= base["value"].to_numpy() * np.exp(P.TOPE_NIVEL) * (1 + 1e-4)).all()
+
+
+def test_level_correction_is_capped(trained):
+    """Una rafaga absurda no puede mover la prediccion mas alla del tope."""
+    import pulso.predict as P
+
+    wide, model = trained
+    cycle = _cycle(wide)
+    delirante = wide.copy()
+    delirante.iloc[-4:] = delirante.iloc[-4:] * 100
+    sin_corregir = P.COEF_NIVEL
+    try:
+        P.COEF_NIVEL = 0.0
+        base, _ = build_predictions(model, delirante, cycle)
+        P.COEF_NIVEL = 0.40
+        con, _ = build_predictions(model, delirante, cycle)
+    finally:
+        P.COEF_NIVEL = sin_corregir
+    razon = con["value"].to_numpy() / base["value"].to_numpy()
+    # Tolerancia relativa por el redondeo a 3 decimales de la salida, no por holgura del tope.
+    assert razon.max() <= np.exp(P.TOPE_NIVEL) * (1 + 1e-4)
+    assert razon.max() > np.exp(P.TOPE_NIVEL) * 0.99, "la rafaga deberia saturar el tope"
 
 
 def test_build_predictions_rejects_history_beyond_the_cutoff(trained):
@@ -666,6 +836,9 @@ def _build_world(competition, *, actual_transform=None, trained_at="2026-09-01T0
     registry = ModelRegistry(db)
     train_and_register(history, registry, config=FAST, rules=LENIENT, git_commit="9" * 40)
     db.tables["model_versions"][0]["trained_at"] = trained_at
+    # El enfriamiento se ancla al ultimo INTENTO de entrenamiento, no al del champion, asi que el
+    # mundo falso tiene que mover las dos fechas para representar "se entreno hace poco".
+    db.tables["model_versions"][0]["created_at"] = trained_at
     _, model = registry.load_champion()
 
     # observaciones nuevas (la «competencia») y predicciones oficiales para cada hora en punto
@@ -784,6 +957,36 @@ def test_monitor_uses_only_official_predictions(competition):
     for sub in db.tables["submissions"]:
         sub["is_official"] = False
     assert load_scored(db).empty
+
+
+def test_cooldown_counts_from_the_last_attempt_not_from_the_champion(competition):
+    """El enfriamiento se ancla al ultimo INTENTO, no al entrenamiento del champion.
+
+    Con la puerta honesta, un refresco de pura cadencia da ganancia ~0 y se rechaza, asi que el
+    champion no cambia. Anclando el contador a el, nunca se reinicia y el enfriamiento no entra
+    jamas: medido en produccion, 22 entrenamientos en 10 horas, todos rechazados por lo mismo.
+    """
+    def collapse(new):
+        new = new.copy()
+        new.iloc[-2 * 96:] *= 0.4
+        return new
+
+    viejo = (pd.Timestamp(NOW) - pd.Timedelta(days=5)).isoformat()
+    db, registry, _ = _build_world(competition, actual_transform=collapse, trained_at=viejo)
+    version = registry.champion()["version"]
+    for _ in range(3):
+        db.insert("metric_snapshots", {"window_name": "rolling_24h", "model_version": version,
+                                       "accuracy": 40.0})
+
+    # El champion es viejo, pero acaba de intentarse un candidato que fue rechazado.
+    db.tables["model_versions"].append({
+        "version": "candidato-rechazado", "status": "rejected",
+        "created_at": (pd.Timestamp(NOW) - pd.Timedelta(minutes=20)).isoformat(),
+        "trained_at": (pd.Timestamp(NOW) - pd.Timedelta(minutes=20)).isoformat(),
+    })
+    result = run_monitor(db, registry, now=NOW)
+    assert result["decision"] == "investigate" and "enfriamiento" in result["reason"], (
+        "un intento reciente debe frenar el siguiente aunque el champion siga siendo viejo")
 
 
 def test_monitor_cooldown_after_recent_training(competition):

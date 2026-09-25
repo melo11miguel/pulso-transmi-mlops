@@ -88,6 +88,28 @@ def _recent_accuracies(db: Supabase, version: str, n: int) -> list[float]:
     return [float(r["accuracy"]) for r in reversed(rows) if r["accuracy"] is not None]
 
 
+def _recent_margins(db: Supabase, version: str, n: int) -> list[float]:
+    """Margen del modelo sobre el perfil en la MISMA ventana, mas reciente al final."""
+    rows = db.select("metric_snapshots", columns="accuracy,baseline_accuracy,computed_at",
+                     filters={"window_name": "eq.rolling_24h", "model_version": f"eq.{version}"},
+                     order="computed_at.desc", limit=n)
+    return [float(r["accuracy"]) - float(r["baseline_accuracy"]) for r in reversed(rows)
+            if r["accuracy"] is not None and r["baseline_accuracy"] is not None]
+
+
+def _rejected_in_a_row(db: Supabase) -> int:
+    """Candidatos rechazados seguidos desde la ultima promocion."""
+    rows = db.select("model_versions", columns="status,created_at",
+                     order="created_at.desc", limit=20)
+    seguidos = 0
+    for r in rows:
+        if r.get("status") == "rejected":
+            seguidos += 1
+        else:
+            break
+    return seguidos
+
+
 def _operational(db: Supabase, api: PulsoApi | None, data_now: pd.Timestamp,
                  now: datetime) -> dict[str, Any]:
     """Señales de salud del pipeline: retraso del collector, cobertura de entregas y fallos."""
@@ -200,14 +222,30 @@ def run_monitor(db: Supabase, registry: ModelRegistry, api: PulsoApi | None = No
         })
 
     # ---- decisión
-    reference = (champion_row.get("validation") or {}).get("accuracy")
+    validacion = champion_row.get("validation") or {}
+    reference = validacion.get("accuracy")
+    base_val = validacion.get("baseline_profile_only_accuracy")
+    reference_margin = (None if reference is None or base_val is None
+                        else float(reference) - float(base_val))
     history = _recent_accuracies(db, version, rules.persistence)
-    trained_at = pd.Timestamp(champion_row["trained_at"])
+    margins = _recent_margins(db, version, rules.persistence)
+    # El enfriamiento debe medirse desde el ULTIMO INTENTO de entrenamiento, no desde el
+    # entrenamiento del champion. Con la puerta honesta, un refresco de pura cadencia da ganancia
+    # ~0 y se rechaza, asi que el champion no cambia; anclando el contador a el, nunca se reinicia
+    # y el enfriamiento no entra jamas. Medido: 22 entrenamientos en 10 horas, uno cada vuelta del
+    # monitor, todos rechazados por la misma razon.
+    ultimo_intento = db.select("model_versions", columns="created_at",
+                               order="created_at.desc", limit=1)
+    ancla = (pd.Timestamp(ultimo_intento[0]["created_at"]) if ultimo_intento
+             else pd.Timestamp(champion_row["trained_at"]))
     state = MonitorState(
         reference_accuracy=None if reference is None else float(reference),
         rolling_accuracies=history,
+        margins=margins,
+        reference_margin=reference_margin,
+        rejected_in_a_row=_rejected_in_a_row(db),
         level_drift_streaks=streaks,
-        hours_since_training=(pd.Timestamp(now) - trained_at) / pd.Timedelta(hours=1),
+        hours_since_training=(pd.Timestamp(now) - ancla) / pd.Timedelta(hours=1),
         new_data_hours=max(0.0, (data_now - pd.Timestamp(champion_row["training_data_end"])
                                  ) / pd.Timedelta(hours=1)),
         **ops,

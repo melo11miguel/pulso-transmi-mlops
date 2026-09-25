@@ -60,6 +60,45 @@ class Submission:
     fallback_targets: int  # targets fuera de +15…+60 resueltos con el perfil puro
 
 
+# Correccion de nivel. El GBM no absorbe del todo el desplazamiento reciente del nivel: el
+# residual medio de la ultima hora contra el perfil predice el sesgo del ciclo siguiente con
+# pendiente +0,401 (SE robusto por ciclo 0,048, t=8,3, IC95 [0,300, 0,501], G=20 conglomerados).
+#
+# Se aplica de forma ADITIVA EN LOG, asi que la prediccion corregida sigue siendo la mediana
+# posterior predictiva, que es lo que minimiza WAPE.
+#
+# Decisiones tomadas con validacion temporal, ajustando en los ciclos anteriores y evaluando en
+# los posteriores:
+#   - un coeficiente unico le gana a uno por horizonte (+0,965 contra +0,882), pese a que la
+#     persistencia si decae con el horizonte (+0,519 a +15 min, +0,251 a +60);
+#   - la componente de ciudad no aporta nada (coeficiente -0,024); la senal es de estacion;
+#   - aplicarla solo en las franjas donde gana es sobreajuste: la compuerta decidida en el pasado
+#     elige mal y hunde la ganancia de +0,965 a +0,057.
+COEF_NIVEL = 0.40
+TOPE_NIVEL = 0.25   # ~28 % de correccion maxima, por si una rafaga se lee mal
+VENTANA_NIVEL = 4   # ultimas 4 filas observadas = 1 hora
+
+
+def nivel_reciente(model: GbmResidualModel, history: pd.DataFrame,
+                   ventana: int = VENTANA_NIVEL) -> dict[str, float]:
+    """Residual medio en log contra el perfil, por estacion, en la ultima hora CON datos.
+
+    Se descartan las filas de relleno del final: cuando falta la observacion del corte,
+    `build_predictions` rellena con NaN y la cola quedaria vacia.
+    """
+    cola = history.dropna(how="all").tail(ventana)
+    if cola.empty:
+        return {}
+    perfil = model.profile.matrix(cola.index)
+    real = cola.to_numpy(dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        residual = np.log(np.where(real > 0, real, np.nan)) - perfil
+    with np.errstate(all="ignore"):
+        medio = np.nanmean(residual, axis=0)
+    return {str(c): float(v) for c, v in zip(cola.columns, medio, strict=False)
+            if np.isfinite(v)}
+
+
 def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
                       cycle: dict[str, Any]) -> tuple[pd.DataFrame, int]:
     """Valor para cada target del ciclo, usando solo `history` (ya recortada al corte)."""
@@ -82,9 +121,11 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
         log.error("Modelo incompatible con este código (falta %s): se entrega el perfil estacional",
                   ", ".join(exc.missing))
         model_out = None
-    by_key = ({} if model_out is None
+    degradado = model_out is None
+    by_key = ({} if degradado
               else {(r.station_id, _utc(r.target_at)): float(r.value)
                     for r in model_out.itertuples()})
+    niveles = {} if degradado else nivel_reciente(model, history)
 
     rows, fallback = [], 0
     columns = {s: i for i, s in enumerate(model.stations)}
@@ -101,6 +142,11 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
             local = pd.DatetimeIndex([target_at]).tz_convert(history.index.tz)
             value = float(np.exp(model.profile.matrix(local)[0, columns[station]]))
             fallback += 1
+        # Solo se corrige lo que salio del modelo: los targets que cayeron al perfil por estar
+        # fuera de +15..+60 ya son el perfil, y corregirlos seria aplicarle el residual a si mismo.
+        if not degradado and station in niveles and by_key.get((station, target_at)) is not None:
+            value = value * float(np.exp(np.clip(COEF_NIVEL * niveles[station],
+                                                 -TOPE_NIVEL, TOPE_NIVEL)))
         rows.append({"station_id": station, "target_at": target["target_at"],
                      "horizon_minutes": int(target.get("horizon_minutes",
                                                        steps * int(STEP.total_seconds() // 60))),
