@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # para encadenar la sesión siguiente sin depender del cron
 
 # Una sola ejecución a la vez: evita entregas duplicadas para el mismo ciclo.
 concurrency:
@@ -23,8 +24,9 @@ jobs:
     # Los disparos programados solo corren si el repositorio define PIPELINE_ENABLED=true
     if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
-    # Cubre la sesión de 4 h más la instalación. El límite de GitHub son 6 h por job.
-    timeout-minutes: 250
+    # Cubre la sesión de 5,5 h más la instalación. El límite de GitHub son 6 h por job.
+    # Sesiones más largas = menos relevos, y cada relevo es una oportunidad de quedarnos cortos.
+    timeout-minutes: 350
     env:
       PULSO_API_URL: ${{ vars.PULSO_API_URL }}
       PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
@@ -43,10 +45,27 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Recolectar observaciones nuevas
         run: python -m pulso.ingest
-      # El job se queda 4 horas entregando cada ciclo que abra, en vez de rendirse si al despertar
+      # El job se queda 5,5 horas entregando cada ciclo que abra, en vez de rendirse si al despertar
       # no hay ninguno. GitHub llegó a estar 5 h sin disparar ninguna ejecución programada, así que
       # la cobertura no puede depender de que un cron caiga dentro de la ventana de 25 min.
       # `concurrency` mantiene un solo job vivo y deja otro en cola listo para relevarlo.
       # Vuelve a sincronizar justo antes de cada entrega, porque la API libera datos cada 30 min.
-      - name: Cubrir los ciclos que abran (sesión de 4 h)
-        run: python -m pulso.predict --run-for 240
+      - name: Cubrir los ciclos que abran (sesión de 5,5 h)
+        run: python -m pulso.predict --run-for 330
+
+      # El relevo no puede depender del cron. Medido el 2026-09-24: el workflow pide ejecutarse
+      # cada 10 minutos y GitHub lo arrancó siete veces en tres días, con huecos de hasta 5 h.
+      # Cuando una sesión termina (o se cae), la siguiente solo llega cuando GitHub quiere, y ese
+      # hueco nos costó dos ciclos y el primer puesto.
+      #
+      # Un `workflow_dispatch` sí se ejecuta siempre, así que cada sesión encadena la siguiente.
+      # `if: always()` para que tambien releve despues de un fallo, que es justo cuando mas falta
+      # hace. El grupo de `concurrency` garantiza que nunca haya dos a la vez, y la espera de un
+      # minuto evita que un fallo inmediato genere un bucle apretado.
+      - name: Encadenar la sesión siguiente
+        if: always() && vars.PIPELINE_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 60
+          gh workflow run collect-and-predict.yml --repo "${{ github.repository }}"
