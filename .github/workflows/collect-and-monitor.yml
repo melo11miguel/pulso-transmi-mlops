@@ -73,6 +73,22 @@ jobs:
                 exit 1
               fi
             fi
+            # Vigilante mutuo. La cadena de relevo de la predicción vive dentro de su propio
+            # job: si el runner muere de golpe (OOM, cancelación), ese paso nunca corre y el
+            # único respaldo es el cron, que aquí se ha medido llegando con huecos de hasta 5 h.
+            # Esta sesión da vueltas cada 30 min, así que puede levantarla con ese retraso como
+            # peor caso. Para que haya hueco tienen que morir las dos cadenas a la vez.
+            viva=$(gh run list --repo "${{ github.repository }}" \
+                     --workflow collect-and-predict.yml \
+                     --json status --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length' \
+                   || echo "error")
+            if [ "$viva" = "0" ]; then
+              echo "no hay sesión de predicción viva: la levanto"
+              gh workflow run collect-and-predict.yml --repo "${{ github.repository }}" || true
+            elif [ "$viva" = "error" ]; then
+              echo "no pude consultar el estado de la predicción; lo reviso en la vuelta siguiente"
+            fi
+
             echo "::endgroup::"
             # Con `if` y no con `&&`: en la última vuelta la condición es falsa y, siendo el
             # último comando del bucle, su estado 1 haría fallar el paso entero.
