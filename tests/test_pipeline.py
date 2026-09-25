@@ -92,6 +92,35 @@ def test_threshold_is_strict_below_reference_minus_drop():
     assert decide_retrain(_state(rolling_accuracies=[83.99] * 4)).decision == "retrain"
 
 
+def test_a_harder_window_does_not_look_like_degradation():
+    """El accuracy de competencia y el de validacion no son comparables.
+
+    Medido en produccion: la referencia de validacion era 87,14 y el accuracy real de competencia
+    83,5 porque el reloj entro en horas dificiles. La diferencia de 3,6 superaba el umbral de 3,0
+    por construccion y la senal disparo 22 veces en 10 horas sin degradacion real. El margen sobre
+    el perfil de la MISMA ventana cancela la dificultad: si el perfil tambien baja, no hay senal.
+    """
+    duro = _state(reference_accuracy=87.14, rolling_accuracies=[83.5] * 4,
+                  reference_margin=1.25, margins=[1.30, 1.28, 1.22, 1.31])
+    assert not performance_signal(duro, RetrainRules())
+    assert decide_retrain(duro).decision == "keep"
+
+
+def test_a_real_degradation_still_fires_with_margins():
+    """Si el modelo deja de aportar sobre el perfil, la senal debe seguir disparando."""
+    malo = _state(reference_accuracy=87.14, rolling_accuracies=[83.5] * 4,
+                  reference_margin=1.25, margins=[0.05, -0.10, 0.02, -0.20])
+    assert performance_signal(malo, RetrainRules())
+    assert decide_retrain(malo).decision == "retrain"
+
+
+def test_repeated_rejections_stop_the_retraining_loop():
+    """Reentrenar contra una puerta que rechaza todo refresco es trabajo perdido."""
+    atascado = _state(reference_margin=1.25, margins=[-0.5] * 4, rejected_in_a_row=3)
+    d = decide_retrain(atascado)
+    assert d.decision == "investigate" and "rechazados" in d.reason
+
+
 def test_level_drift_alone_triggers_retrain():
     d = decide_retrain(_state(level_drift_streaks={"02300": 12, "03000": 0}))
     assert d.decision == "retrain" and d.signals["data"] and not d.signals["performance"]
@@ -207,6 +236,29 @@ def test_baseline_accuracy_matches_profile_prediction():
                                       "prediction": 1.0}) for s in wide.columns], ignore_index=True)
     acc = baseline_accuracy(profile, wide, scored, wide.index[-1], hours=48)
     assert 80 < acc <= 100  # el perfil sobre datos sintéticos con ruido de 10 %
+
+
+def test_baseline_accuracy_is_timezone_safe():
+    """Los target_at llegan de Supabase en UTC; el perfil es funcion de la hora de la SEMANA.
+
+    Sin convertir a la zona de la rejilla queda desplazado cinco horas y el baseline se desploma.
+    Estuvo asi todo el proyecto: en produccion marcaba 12,15 donde el perfil real saca ~87, y el
+    test viejo no lo veia porque construia target_at desde wide.index, ya en la zona correcta.
+    """
+    wide = synthetic_wide(days=24)
+    profile = Profile().fit(wide.index[:20 * 96], np.log(wide.to_numpy()[:20 * 96]))
+    idx = wide.index[20 * 96:]
+    local = pd.concat([pd.DataFrame({"station_id": s, "target_at": idx,
+                                     "actual": wide.loc[idx, s].to_numpy(), "prediction": 1.0})
+                       for s in wide.columns], ignore_index=True)
+    utc = local.copy()
+    utc["target_at"] = pd.DatetimeIndex(utc["target_at"]).tz_convert("UTC")
+
+    a_local = baseline_accuracy(profile, wide, local, wide.index[-1], hours=48)
+    a_utc = baseline_accuracy(profile, wide, utc, wide.index[-1], hours=48)
+    assert a_utc == pytest.approx(a_local, abs=0.01), (
+        "el mismo instante expresado en otra zona debe dar el mismo baseline")
+    assert a_utc > 80
 
 
 # ------------------------------------------------------------------ estrés de drift

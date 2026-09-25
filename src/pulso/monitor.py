@@ -96,7 +96,12 @@ def baseline_accuracy(profile: Profile, wide: pd.DataFrame, scored: pd.DataFrame
     if part.empty:
         return float("nan")
     columns = {s: i for i, s in enumerate(wide.columns)}
+    # A la zona de la rejilla antes de evaluar el perfil: es funcion de la hora de la semana, asi
+    # que con las horas en UTC queda desplazado cinco horas y devuelve un disparate. Estuvo asi
+    # todo el proyecto y el baseline almacenado marcaba 12,15 donde el perfil real saca ~87.
     times = pd.DatetimeIndex(part["target_at"])
+    times = times.tz_localize("UTC") if times.tz is None else times
+    times = times.tz_convert(wide.index.tz)
     base = np.exp(profile.matrix(times))
     part["prediction"] = base[np.arange(len(part)), part["station_id"].map(columns).to_numpy()]
     return official_accuracy(part["actual"], part["prediction"], part["station_id"])

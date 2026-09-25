@@ -40,9 +40,18 @@ def decide_promotion(candidate_acc: float, champion_acc: float | None, baseline_
 # ---------------------------------------------------------------------------- reentrenamiento
 @dataclass(frozen=True)
 class RetrainRules:
-    # Caída del accuracy rolling 24 h frente a la referencia de validación que cuenta como
-    # degradación. El backtest semanal varía ±0.5; una caída de 3 pts ya es 6σ.
+    # Caída del MARGEN sobre el perfil, no del accuracy a secas. El accuracy de competencia y el
+    # de validación no son comparables: se miden sobre ventanas de dificultad distinta, y la
+    # diferencia supera el umbral por construcción. Medido: con la regla vieja la señal disparó 22
+    # veces en 10 horas sin que el modelo se hubiera degradado, solo porque la competencia entró en
+    # horas difíciles. El margen sobre el perfil de la MISMA ventana sí es comparable: cancela la
+    # dificultad de la ventana y aísla lo que aporta el modelo.
+    margin_drop_pts: float = 1.0
+    # Se conserva por compatibilidad con la señal vieja cuando no hay margen disponible.
     performance_drop_pts: float = 3.0
+    # Candidatos rechazados seguidos tras los cuales se deja de reentrenar y se investiga.
+    # Reentrenar contra una puerta que rechaza todo refresco es trabajo perdido.
+    max_rejected_in_a_row: int = 3
     # Cambio de nivel por estación: |media del residuo log de 24 h| >= max(piso, k × ruido de fondo
     # propio). El ruido de fondo (eventos, lluvia) se mide al entrenar (monitor.level_noise): con un
     # umbral fijo de 0.10 un evento de tarde-noche disparó una falsa alarma en la prueba de estrés.
@@ -72,6 +81,11 @@ class MonitorState:
 
     reference_accuracy: float | None  # accuracy de validación del champion
     rolling_accuracies: list[float] = field(default_factory=list)  # más reciente al final
+    # Margen del modelo sobre el perfil en la MISMA ventana, más reciente al final, y el margen
+    # de referencia que obtuvo en validación. Comparables entre sí.
+    margins: list[float] = field(default_factory=list)
+    reference_margin: float | None = None
+    rejected_in_a_row: int = 0
     level_drift_streaks: dict[str, int] = field(default_factory=dict)  # estación -> evaluaciones seguidas
     hours_since_training: float | None = None
     new_data_hours: float = 0.0
@@ -88,7 +102,14 @@ class Decision:
 
 
 def performance_signal(state: MonitorState, rules: RetrainRules) -> bool:
-    """True si las últimas `persistence` evaluaciones están todas por debajo del umbral."""
+    """True si las últimas `persistence` evaluaciones están todas por debajo del umbral.
+
+    Se prefiere el margen sobre el perfil de la misma ventana, que es lo único comparable con la
+    referencia. Si no hay margen (monitor viejo, baseline sin calcular) se cae a la regla anterior.
+    """
+    if state.reference_margin is not None and len(state.margins) >= rules.persistence:
+        limit = state.reference_margin - rules.margin_drop_pts
+        return all(m < limit for m in state.margins[-rules.persistence:])
     if state.reference_accuracy is None or len(state.rolling_accuracies) < rules.persistence:
         return False
     limit = state.reference_accuracy - rules.performance_drop_pts
@@ -124,6 +145,10 @@ def decide_retrain(state: MonitorState, rules: RetrainRules = RetrainRules()) ->
     if state.hours_since_training is not None and state.hours_since_training < rules.cooldown_hours:
         return Decision("investigate", f"{cause}, pero el último entrenamiento fue hace "
                         f"{state.hours_since_training:.1f} h (enfriamiento {rules.cooldown_hours} h)",
+                        signals)
+    if state.rejected_in_a_row >= rules.max_rejected_in_a_row:
+        return Decision("investigate", f"{cause}, pero los últimos {state.rejected_in_a_row} "
+                        "candidatos fueron rechazados: reentrenar otra vez no va a cambiarlo",
                         signals)
     if state.new_data_hours < rules.min_new_hours:
         return Decision("investigate", f"{cause}, pero solo hay {state.new_data_hours:.1f} h de "
