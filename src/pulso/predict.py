@@ -75,8 +75,22 @@ class Submission:
 #   - aplicarla solo en las franjas donde gana es sobreajuste: la compuerta decidida en el pasado
 #     elige mal y hunde la ganancia de +0,965 a +0,057.
 COEF_NIVEL = 0.40
+# La correccion solo sirve cuando el modelo NO tiene el nivel reciente en sus datos. Medido en el
+# camino real: con el champion rancio (3 dias virtuales) suma +3,61; con un modelo fresco RESTA
+# entre 1,0 y 1,7, porque cuenta dos veces un nivel que el modelo ya aprendio. Por eso se escala
+# por rancidez: nula recien entrenado, plena a partir de HORAS_RANCIO_PLENO.
+HORAS_RANCIO_PLENO = 24.0
 TOPE_NIVEL = 0.25   # ~28 % de correccion maxima, por si una rafaga se lee mal
 VENTANA_NIVEL = 4   # ultimas 4 filas observadas = 1 hora
+
+
+def factor_rancidez(model: GbmResidualModel, corte: pd.Timestamp) -> float:
+    """0 si el modelo se entreno con datos hasta el corte, 1 si lleva HORAS_RANCIO_PLENO atras."""
+    fin = getattr(model, "train_end", None)
+    if fin is None:
+        return 1.0
+    horas = (pd.Timestamp(corte) - pd.Timestamp(fin)) / pd.Timedelta(hours=1)
+    return float(np.clip(horas / HORAS_RANCIO_PLENO, 0.0, 1.0))
 
 
 def nivel_reciente(model: GbmResidualModel, history: pd.DataFrame,
@@ -126,6 +140,10 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
               else {(r.station_id, _utc(r.target_at)): float(r.value)
                     for r in model_out.itertuples()})
     niveles = {} if degradado else nivel_reciente(model, history)
+    rancidez = 0.0 if degradado else factor_rancidez(model, cutoff)
+    if niveles and rancidez < 1.0:
+        log.info("Correccion de nivel al %.0f %% (el modelo tiene datos hasta %s)",
+                 100 * rancidez, getattr(model, "train_end", "?"))
 
     rows, fallback = [], 0
     columns = {s: i for i, s in enumerate(model.stations)}
