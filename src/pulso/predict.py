@@ -85,6 +85,71 @@ TOPE_NIVEL = 0.25   # ~28 % de correccion maxima, por si una rafaga se lee mal
 VENTANA_NIVEL = 4   # ultimas 4 filas observadas = 1 hora
 
 
+# Desfase de fase. El evento del 09-13 no solo movio el nivel: en cuatro estaciones corrio el PICO
+# 45 minutos manteniendo la forma del dia intacta (correlaciones de 0,98 a 0,995 entre el perfil
+# reciente y el historico). Una correccion de nivel no puede arreglar un pico que se movio en el
+# tiempo, por mucho coeficiente que se le ponga.
+#
+# Se DETECTA y se registra en el log, pero NO se corrige. Medido en el camino real con champion
+# honesto: aplicar el desplazamiento completo del perfil sobre la salida del modelo da -2,44,
+# porque el GBM ya absorbe parte del desfase con sus variables de residual reciente y la
+# correccion lo cuenta dos veces. Es el mismo patron que la correccion de nivel sobre un modelo
+# fresco. El fenomeno es real (corregir el PERFIL da +3,42), pero corregir la SALIDA no lo es.
+DESFASES = range(-4, 5)          # de -1 h a +1 h
+DIAS_FASE = 3                    # ventana reciente para estimar la fase
+CORRELACION_MINIMA = 0.90        # sin buen ajuste de forma, no se mueve nada
+DESFASE_MINIMO = 2               # menos de 30 min es ruido
+
+
+def desfase_por_estacion(model: GbmResidualModel, history: pd.DataFrame) -> dict[str, int]:
+    """Desfase en franjas de 15 min por estacion, por correlacion cruzada del perfil diario.
+
+    Solo mira `history`, que ya viene recortada al data_cutoff del ciclo.
+    """
+    if len(history) < 96 * (DIAS_FASE + 7):
+        return {}
+    corte = history.index[-1] - pd.Timedelta(days=DIAS_FASE)
+    reciente, viejo = history.loc[corte:], history.loc[:corte]
+    if len(reciente) < 96 or len(viejo) < 96 * 7:
+        return {}
+
+    def perfil_dia(df: pd.DataFrame) -> pd.DataFrame:
+        return df.groupby(df.index.hour * 4 + df.index.minute // 15).mean()
+
+    pv, pr = perfil_dia(viejo), perfil_dia(reciente)
+    out: dict[str, int] = {}
+    for col in history.columns:
+        x, y = pv[col].to_numpy(dtype=float), pr[col].to_numpy(dtype=float)
+        if len(x) != 96 or len(y) != 96 or not (np.isfinite(x).all() and np.isfinite(y).all()):
+            continue
+        xn = (x - x.mean()) / (x.std() + 1e-9)
+        yn = (y - y.mean()) / (y.std() + 1e-9)
+        mejor, r_max = 0, -9.0
+        for k in DESFASES:
+            r = float(np.corrcoef(xn, np.roll(yn, k))[0, 1])
+            if r > r_max:
+                mejor, r_max = k, r
+        if r_max >= CORRELACION_MINIMA and abs(mejor) >= DESFASE_MINIMO:
+            out[str(col)] = mejor
+    return out
+
+
+def ajuste_de_fase(model: GbmResidualModel, station: str, cuando: pd.Timestamp,
+                   desfases: dict[str, int], tz) -> float:
+    """Cuanto multiplicar la prediccion para corregir el desfase de esa estacion."""
+    k = desfases.get(station, 0)
+    if k == 0:
+        return 1.0
+    j = model.stations.index(station)
+    local = pd.DatetimeIndex([cuando]).tz_convert(tz)
+    corrido = local + k * STEP
+    p0 = model.profile.matrix(local)[0, j]
+    p1 = model.profile.matrix(corrido)[0, j]
+    if not (np.isfinite(p0) and np.isfinite(p1)):
+        return 1.0
+    return float(np.exp(np.clip(p1 - p0, -TOPE_NIVEL * 3, TOPE_NIVEL * 3)))
+
+
 def factor_rancidez(model: GbmResidualModel, corte: pd.Timestamp) -> float:
     """0 si el modelo se entreno con datos hasta el corte, 1 si lleva HORAS_RANCIO_PLENO atras."""
     fin = getattr(model, "train_end", None)
@@ -146,6 +211,9 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
                     for r in model_out.itertuples()})
     niveles = {} if degradado else nivel_reciente(model, history)
     rancidez = 0.0 if degradado else factor_rancidez(model, cutoff)
+    fases = {} if degradado else desfase_por_estacion(model, history)
+    if fases:
+        log.info('Desfase de fase detectado: %s', fases)
     if niveles and rancidez < 1.0:
         log.info("Correccion de nivel al %.0f %% (el modelo tiene datos hasta %s)",
                  100 * rancidez, getattr(model, "train_end", "?"))
@@ -167,9 +235,13 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
             fallback += 1
         # Solo se corrige lo que salio del modelo: los targets que cayeron al perfil por estar
         # fuera de +15..+60 ya son el perfil, y corregirlos seria aplicarle el residual a si mismo.
-        if not degradado and station in niveles and by_key.get((station, target_at)) is not None:
-            value = value * float(np.exp(np.clip(COEF_NIVEL * niveles[station],
-                                                 -TOPE_NIVEL, TOPE_NIVEL)))
+        if not degradado and by_key.get((station, target_at)) is not None:
+            if station in niveles:
+                # Escalada por rancidez: con el modelo al dia la correccion resta, porque cuenta
+                # dos veces un nivel que el ya aprendio.
+                value = value * float(np.exp(np.clip(COEF_NIVEL * rancidez * niveles[station],
+                                                     -TOPE_NIVEL, TOPE_NIVEL)))
+
         rows.append({"station_id": station, "target_at": target["target_at"],
                      "horizon_minutes": int(target.get("horizon_minutes",
                                                        steps * int(STEP.total_seconds() // 60))),

@@ -655,6 +655,9 @@ def test_level_correction_moves_predictions_toward_the_recent_level(trained):
     cycle = _cycle(wide)
     alto = wide.copy()
     alto.iloc[-4:] = alto.iloc[-4:] * 1.5              # ultima hora un 50 % por encima
+    # El modelo debe estar RANCIO para que la correccion se aplique: con datos hasta el corte,
+    # rancidez 0 y no corrige nada, que es lo que prueba el test de la escala.
+    model.train_end = alto.index[-1] - pd.Timedelta(hours=48)
     # La MISMA historia en las dos ramas: si se cambiara solo en una, tambien cambiaria la
     # prediccion del GBM (usa los residuales recientes) y la razon no aislaria la correccion.
     sin_corregir = P.COEF_NIVEL
@@ -665,6 +668,7 @@ def test_level_correction_moves_predictions_toward_the_recent_level(trained):
         con, _ = build_predictions(model, alto, cycle)
     finally:
         P.COEF_NIVEL = sin_corregir
+        model.train_end = wide.index[-1]
     assert (con["value"].to_numpy() > base["value"].to_numpy()).all()
     # Y con tope. La tolerancia relativa es por el `round(value, 3)` de la salida: sobre valores
     # de decenas, ese redondeo mueve la razon en ~1e-5, mas que un 1e-6 absoluto.
@@ -680,6 +684,7 @@ def test_level_correction_is_capped(trained):
     cycle = _cycle(wide)
     delirante = wide.copy()
     delirante.iloc[-4:] = delirante.iloc[-4:] * 100
+    model.train_end = delirante.index[-1] - pd.Timedelta(hours=48)
     sin_corregir = P.COEF_NIVEL
     try:
         P.COEF_NIVEL = 0.0
@@ -688,6 +693,7 @@ def test_level_correction_is_capped(trained):
         con, _ = build_predictions(model, delirante, cycle)
     finally:
         P.COEF_NIVEL = sin_corregir
+        model.train_end = wide.index[-1]
     razon = con["value"].to_numpy() / base["value"].to_numpy()
     # Tolerancia relativa por el redondeo a 3 decimales de la salida, no por holgura del tope.
     assert razon.max() <= np.exp(P.TOPE_NIVEL) * (1 + 1e-4)
