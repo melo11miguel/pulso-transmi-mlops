@@ -73,6 +73,16 @@ jobs:
                 exit 1
               fi
             fi
+            # Refresco por cadencia, separado de la puerta. Si el champion lleva mas de REFRESCO_H
+            # horas de reloj de datos sin actualizarse, se pide un refresco. No pasa por la
+            # puerta: con la puerta honesta un refresco da ganancia 0 y se rechazaria siempre,
+            # que es lo que congelo el champion tres dias virtuales y costo ~6 puntos.
+            if [ $((i % 12)) -eq 1 ]; then
+              gh workflow run train.yml --repo "${{ github.repository }}" \
+                 -f modo=refresco -f reason="refresco de cadencia (run ${{ github.run_id }})" \
+                 || echo "no se pudo pedir el refresco; se reintenta en la vuelta siguiente"
+            fi
+
             # Vigilante mutuo. La cadena de relevo de la predicción vive dentro de su propio
             # job: si el runner muere de golpe (OOM, cancelación), ese paso nunca corre y el
             # único respaldo es el cron, que aquí se ha medido llegando con huecos de hasta 5 h.

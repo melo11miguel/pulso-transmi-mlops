@@ -4,6 +4,11 @@ name: Entrenar candidato
 # baseline y el champion, y promueve solo si supera los criterios (policy.PromotionRules).
 # Se ejecuta a mano (también la primera vez, para crear el champion inicial), cada día, o
 # cuando el monitor decide reentrenar.
+#
+# Dos modos, porque son dos decisiones distintas. `receta` juzga un cambio de modelo con la puerta
+# de promoción. `refresco` solo trae datos nuevos con la misma receta: con la puerta honesta eso da
+# ganancia exactamente 0 y se rechazaría siempre, así que el refresco la salta y se promueve con
+# la prueba de humo y el baseline. Mezclar ambas congeló el champion tres días virtuales.
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +16,12 @@ on:
         description: Motivo del entrenamiento (queda registrado con la versión)
         default: manual
         required: false
+      modo:
+        description: "receta (pasa por la puerta) o refresco (solo datos nuevos)"
+        default: receta
+        required: false
+        type: choice
+        options: [receta, refresco]
   schedule:
     - cron: "20 8 * * *"
 
@@ -42,4 +53,9 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -e . --no-deps
       - name: Entrenar, validar y decidir la promoción
-        run: python -m pulso.train
+        run: |
+          if [ "${{ inputs.modo }}" = "refresco" ]; then
+            python -m pulso.train --refresh
+          else
+            python -m pulso.train
+          fi

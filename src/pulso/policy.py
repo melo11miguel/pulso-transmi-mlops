@@ -37,6 +37,25 @@ def decide_promotion(candidate_acc: float, champion_acc: float | None, baseline_
     return False, f"mejora insuficiente ({gain:+.2f} pts < {rules.min_gain_over_champion})"
 
 
+def decide_refresh(candidate_acc: float, baseline_acc: float,
+                   smoke_ok: bool) -> tuple[bool, str]:
+    """Refresco de cadencia: el candidato solo trae datos nuevos, no compite con una receta.
+
+    No pasa por `decide_promotion` a proposito. Con la puerta honesta el gemelo del champion usa
+    la misma receta y el mismo train_part, asi que la ganancia de un refresco es exactamente 0 y
+    seria rechazado siempre. Basta con que el modelo sea sano: que pase la prueba de humo y que no
+    sea peor que el perfil estacional.
+    """
+    if not smoke_ok:
+        return False, "refresco descartado: fallo la inferencia de prueba"
+    if candidate_acc != candidate_acc:  # NaN
+        return False, "refresco descartado: la validacion no produjo metrica"
+    if candidate_acc < baseline_acc:
+        return False, (f"refresco descartado: no supera al baseline de perfil "
+                       f"({candidate_acc:.2f} vs {baseline_acc:.2f})")
+    return True, f"refresco con datos nuevos: {candidate_acc:.2f} vs baseline {baseline_acc:.2f}"
+
+
 # ---------------------------------------------------------------------------- reentrenamiento
 @dataclass(frozen=True)
 class RetrainRules:

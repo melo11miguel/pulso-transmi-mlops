@@ -443,6 +443,42 @@ def test_champion_twin_keeps_the_champion_recipe(fake_db):
     assert T.receta_del_champion(futuro) is None, "sin gemelo posible, la puerta lo trata como ausente"
 
 
+def test_a_refresh_promotes_where_the_gate_would_freeze_the_model(fake_db):
+    """Las dos decisiones son distintas y mezclarlas congela el modelo.
+
+    Con la puerta honesta el gemelo del champion usa la MISMA receta y el MISMO train_part que el
+    candidato, asi que un refresco da ganancia exactamente 0 y se rechaza. Medido en produccion:
+    el champion quedo clavado en datos del 09-12 mientras el reloj llegaba al 09-15, veinte
+    candidatos seguidos rechazados con +0,00, y el accuracy cayo de ~84 a ~78.
+    """
+    wide = synthetic_wide(days=30)
+    registry = ModelRegistry(fake_db)
+    train_and_register(wide, registry, config=FAST, rules=LENIENT, git_commit="a" * 40)
+    primero = registry.champion()["version"]
+
+    # Mismo codigo y misma receta: la puerta lo rechaza por ganancia nula.
+    por_puerta = train_and_register(wide, registry, config=FAST, rules=LENIENT,
+                                    git_commit="b" * 40)
+    assert not por_puerta.promoted and registry.champion()["version"] == primero
+
+    # El refresco, en cambio, lo promueve: no compite con nadie, solo trae datos nuevos.
+    refresco = train_and_register(wide, registry, config=FAST, rules=LENIENT,
+                                  git_commit="c" * 40, modo="refresco")
+    assert refresco.promoted, refresco.reason
+    assert registry.champion()["version"] == refresco.version
+    assert "refresco" in refresco.reason
+
+
+def test_a_refresh_still_refuses_a_broken_model(fake_db):
+    """El refresco salta la puerta, no los controles de sanidad."""
+    from pulso.policy import decide_refresh
+
+    assert not decide_refresh(90.0, 86.0, smoke_ok=False)[0]
+    assert not decide_refresh(float("nan"), 86.0, smoke_ok=True)[0]
+    assert not decide_refresh(85.0, 86.0, smoke_ok=True)[0], "peor que el perfil no se promueve"
+    assert decide_refresh(86.5, 86.0, smoke_ok=True)[0]
+
+
 def test_train_validation_metadata_is_recorded(fake_db):
     wide = synthetic_wide(days=30)
     result = train_and_register(wide, ModelRegistry(fake_db), config=FAST, rules=LENIENT)

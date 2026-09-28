@@ -31,7 +31,7 @@ from .config import Settings
 from .dbdata import load_wide
 from .features import FEATURE_COLUMNS, HORIZONS, STEP
 from .model import GbmResidualModel, ModelConfig
-from .policy import PromotionRules, decide_promotion
+from .policy import PromotionRules, decide_promotion, decide_refresh
 from .registry import ModelRegistry, current_git_commit
 from .runlog import pipeline_run
 from .supa import Supabase
@@ -104,8 +104,17 @@ def receta_del_champion(champion: GbmResidualModel) -> ModelConfig | None:
 
 def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
                        config: ModelConfig | None = None, reason: str = "manual",
-                       git_commit: str | None = None,
+                       git_commit: str | None = None, modo: str = "receta",
                        rules: PromotionRules = PromotionRules()) -> TrainResult:
+    """`modo="receta"` juzga un cambio de receta con la puerta; `modo="refresco"` solo refresca.
+
+    Son dos decisiones distintas y mezclarlas congela el modelo. Con la puerta honesta, el gemelo
+    del champion se entrena con la MISMA receta y el MISMO train_part que el candidato, asi que un
+    refresco da ganancia exactamente 0 y se rechaza siempre. Medido en produccion: el champion
+    quedo clavado en datos del 09-12 mientras el reloj llegaba al 09-15, y el accuracy cayo de ~84
+    a ~78. El refresco no pasa por la puerta: basta con que supere al baseline y pase la prueba de
+    humo, porque no esta compitiendo contra nadie, solo trayendo datos nuevos.
+    """
     config = config or ModelConfig()
     n_days = len(wide) / 96
     if n_days < MIN_DAYS:
@@ -138,8 +147,11 @@ def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
 
     final = GbmResidualModel(config).fit(wide)
     smoke_ok, smoke_msg = smoke_test(final, wide)
-    promote, why = decide_promotion(candidate_val["accuracy"], champion_acc,
-                                    baseline_val["accuracy"], smoke_ok, rules)
+    if modo == "refresco":
+        promote, why = decide_refresh(candidate_val["accuracy"], baseline_val["accuracy"], smoke_ok)
+    else:
+        promote, why = decide_promotion(candidate_val["accuracy"], champion_acc,
+                                        baseline_val["accuracy"], smoke_ok, rules)
     validation = {
         "holdout_start": fold.val_start.isoformat(), "holdout_end": fold.val_end.isoformat(),
         "accuracy": candidate_val["accuracy"], "wape": candidate_val["wape"],
@@ -148,7 +160,7 @@ def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
         "baseline_profile_only_accuracy": baseline_val["accuracy"],
         "champion_twin_accuracy": champion_acc, "comparacion": comparacion,
         "smoke_test": smoke_msg,
-        "decision": "promote" if promote else "reject", "decision_reason": why,
+        "decision": "promote" if promote else "reject", "decision_reason": why, "modo": modo,
     }
     row = registry.register_candidate(final, validation=validation, git_commit=git_commit,
                                       reason=f"{reason} | {why}", parent_version=parent)
@@ -164,6 +176,8 @@ def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Entrena un candidato y decide su promoción")
     parser.add_argument("--reason", default=os.getenv("TRAIN_REASON", "manual"))
+    parser.add_argument("--refresh", action="store_true",
+                        help="refresco de cadencia: promueve con datos nuevos sin pasar por la puerta")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -174,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
             wide = load_wide(db)
             log.info("Datos: %s filas, %s → %s", len(wide), wide.index[0], wide.index[-1])
             result = train_and_register(wide, ModelRegistry(db), reason=args.reason,
+                                        modo="refresco" if args.refresh else "receta",
                                         git_commit=current_git_commit())
             run.summary.update(asdict(result))
             log.info("Entrenamiento: %s", asdict(result))
