@@ -59,6 +59,12 @@ class TrainResult:
     n_targets: int
 
 
+# Receta de produccion. El defecto de ModelConfig deja `peso_metrica=0` para poder reconstruir
+# fielmente la receta de un champion antiguo; los candidatos nuevos se entrenan con la receta
+# vigente, que es esta.
+CONFIG_PRODUCCION = ModelConfig(peso_metrica=0.5)
+
+
 def holdout_fold(wide: pd.DataFrame, days: int = HOLDOUT_DAYS) -> Fold:
     end = wide.index[-1]
     start = end - pd.Timedelta(days=days) + STEP
@@ -115,7 +121,7 @@ def train_and_register(wide: pd.DataFrame, registry: ModelRegistry, *,
     a ~78. El refresco no pasa por la puerta: basta con que supere al baseline y pase la prueba de
     humo, porque no esta compitiendo contra nadie, solo trayendo datos nuevos.
     """
-    config = config or ModelConfig()
+    config = config or CONFIG_PRODUCCION
     n_days = len(wide) / 96
     if n_days < MIN_DAYS:
         raise TrainingError(f"Solo hay {n_days:.1f} días de datos (mínimo {MIN_DAYS})")

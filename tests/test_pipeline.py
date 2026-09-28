@@ -479,6 +479,32 @@ def test_a_refresh_still_refuses_a_broken_model(fake_db):
     assert decide_refresh(86.5, 86.0, smoke_ok=True)[0]
 
 
+def test_metric_weights_are_normalised_within_each_station(trained):
+    """w = y^p normalizado DENTRO de cada estacion, no global.
+
+    Con peso global la hora pico de las estaciones grandes se comeria el ajuste entero, y la
+    metrica promedia las 12 SIN ponderar. Normalizar por estacion es lo que respeta eso.
+    """
+    _, model = trained
+    y = np.array([100.0, 400.0, 100.0, 400.0])
+    est = np.array([0, 0, 1, 1])
+    m = GbmResidualModel(ModelConfig(peso_metrica=0.5))
+    w = m._pesos(y, est)
+    assert w.mean() == pytest.approx(1.0)
+    # cada estacion aporta lo mismo en total
+    assert w[:2].sum() == pytest.approx(w[2:].sum())
+    # dentro de la estacion, el target grande pesa mas (raiz de 4 = 2)
+    assert w[1] / w[0] == pytest.approx(2.0, rel=1e-6)
+
+
+def test_the_old_recipe_stays_unweighted_so_the_gate_can_compare(trained):
+    """El defecto debe ser 0: si un champion antiguo se reconstruyera con la receta NUEVA, la
+    puerta compararia dos modelos identicos y volveria a congelar el modelo."""
+    assert ModelConfig().peso_metrica == 0.0
+    import pulso.train as T
+    assert T.CONFIG_PRODUCCION.peso_metrica == 0.5
+
+
 def test_train_validation_metadata_is_recorded(fake_db):
     wide = synthetic_wide(days=30)
     result = train_and_register(wide, ModelRegistry(fake_db), config=FAST, rules=LENIENT)
