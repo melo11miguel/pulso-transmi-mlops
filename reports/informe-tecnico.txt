@@ -153,8 +153,26 @@ Se documentan porque el trabajo descartado tambien es resultado:
     Coeficiente por horizonte                        +0,88 vs +0,97
     Correccion solo con la componente de ciudad      -0,02
     Coeficiente escalado por volatilidad             +0,004
+    Vida media del perfil (2 a 14 dias)              +0,006
+    Perfil adaptativo mezclado con el champion       -1,62
+    Idem, solo interviniendo en cierres              -0,28
+    Idem, con mas peso donde hay desfase de fase    -12,15
 
-El ultimo merece explicacion porque la teoria lo respaldaba: la accuracy por estacion
+Los tres del perfil adaptativo vienen de estudiar el repositorio publico del primero de la
+cohorte, que resolvio el evento con esa arquitectura: un perfil corto que se reajusta en cada
+ciclo y se mezcla con el champion, con mas peso donde detecta desfase y peso total en un cierre.
+No transfiere a nuestro sistema, y la razon es medible: nuestro champion saca 83,94 y el perfil
+adaptativo 78,54, asi que mezclar un 40 % de algo 5,4 puntos peor solo puede arrastrar. En su
+sistema el equilibrio entre las dos piezas debe ser otro.
+
+Lo que si transfirio fue el DIAGNOSTICO, no el codigo: el evento tiene dos fenomenos separados,
+nivel y fase, y yo solo habia visto el nivel. Verificado por correlacion cruzada sobre nuestros
+datos: cuatro estaciones tienen el pico corrido 45 minutos con la forma intacta (correlaciones de
+0,98 a 0,995) y Banderas es un cierre puro sin desfase. Corregir la fase sobre el perfil da +3,42
+en esas cuatro; falta un estimador de fase que no se equivoque, porque el que escribi elige mal y
+hunde justo esas estaciones.
+
+El ultimo de la lista anterior merece explicacion porque la teoria lo respaldaba: la accuracy por estacion
 correlaciona -0,688 con la volatilidad de su nivel, asi que parecia que cada estacion
 debia seguir al dato reciente con distinta fuerza. Pero la volatilidad solo va de 0,079
 a 0,111 mientras la accuracy va de 69,8 a 88,6: el coeficiente escalado queda entre
