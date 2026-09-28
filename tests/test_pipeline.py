@@ -203,6 +203,22 @@ def test_station_level_shift_detects_a_level_change():
     assert abs(shift["02300"]) < 0.05 and abs(shift["05000"]) < 0.05
 
 
+def test_drift_threshold_has_a_ceiling_so_drift_cannot_hide_behind_its_own_noise():
+    """Sin techo, un drift sostenido infla el ruido historico y sube el umbral que deberia cazarlo.
+
+    Medido en produccion: Banderas cayo un 56 % respecto a su perfil (desplazamiento -0,829) y su
+    umbral habia subido a 1,085, que exige un cambio del 196 %. El detector nunca disparo.
+    """
+    ruidosa = {"tranquila": 0.04, "volatil": 0.87}
+    umbrales = level_thresholds(ruidosa, floor=0.10, multiplier=1.25, ceiling=0.30)
+    assert umbrales["tranquila"] == pytest.approx(0.10), "el piso protege a las estables"
+    assert umbrales["volatil"] == pytest.approx(0.30), "el techo impide que el drift se esconda"
+
+    # Con el umbral corregido, el caso real de Banderas si dispara.
+    rachas = update_streaks({}, pd.Series({"volatil": -0.829}), umbrales)
+    assert rachas["volatil"] == 1
+
+
 def test_update_streaks_counts_consecutive_hits_and_resets():
     shifts = pd.Series({"A": 0.2, "B": 0.05, "C": np.nan, "D": -0.15})
     first = update_streaks({}, shifts, 0.10)
@@ -218,7 +234,9 @@ def test_level_noise_reflects_transient_events_and_sets_higher_thresholds():
     times, log = events.index, np.log(events.to_numpy())
     noise = level_noise(Profile().fit(times, log), events)
     assert noise["02300"] > 2 * noise["03000"] and noise["02300"] > 0.15
-    thresholds = level_thresholds(noise, floor=0.10, multiplier=1.25)
+    # Techo alto a proposito: aqui se prueba la proporcionalidad con el ruido. El techo por
+    # defecto tiene su propia prueba, la del drift que se escondia detras de su propio ruido.
+    thresholds = level_thresholds(noise, floor=0.10, multiplier=1.25, ceiling=10.0)
     assert thresholds["02300"] == pytest.approx(1.25 * noise["02300"])
     assert thresholds["03000"] == 0.10  # el piso protege a estaciones con poco ruido
 

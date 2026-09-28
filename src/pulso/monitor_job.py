@@ -173,7 +173,7 @@ def run_monitor(db: Supabase, registry: ModelRegistry, api: PulsoApi | None = No
     wide = load_wide(db)
     data_now = wide.index[-1]
     thresholds = level_thresholds(model.level_noise, rules.level_drift_floor,
-                                  rules.level_noise_multiplier)
+                                  rules.level_noise_multiplier, rules.level_drift_ceiling)
 
     ops = _operational(db, api, data_now, now)
 

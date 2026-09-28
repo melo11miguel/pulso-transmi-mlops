@@ -81,6 +81,9 @@ class RetrainRules:
     # umbral fijo de 0.10 un evento de tarde-noche disparó una falsa alarma en la prueba de estrés.
     level_drift_floor: float = 0.10
     level_noise_multiplier: float = 1.25
+    # Techo del umbral: por encima de esto el desplazamiento es accionable sea cual sea el ruido
+    # propio de la estacion. Sin techo, el drift infla el ruido y se esconde detras de el.
+    level_drift_ceiling: float = 0.30
     # Evaluaciones consecutivas (una cada 30 min) que deben cumplirse: evita reaccionar a un
     # único periodo difícil. El desempeño es una señal fuerte (4 = 2 h); el nivel se mide sobre
     # ventanas de 24 h casi solapadas, por lo que exige más (12 = 6 h).

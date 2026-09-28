@@ -72,9 +72,20 @@ def level_noise(profile: Profile, wide: pd.DataFrame, hours: float = 24.0) -> di
     return {c: float(rolled[c].abs().max()) for c in rolled.columns}
 
 
-def level_thresholds(noise: dict[str, float], floor: float, multiplier: float) -> pd.Series:
-    """Umbral por estación: max(piso, multiplicador × ruido de fondo propio)."""
-    return pd.Series({s: max(floor, multiplier * (v if np.isfinite(v) else 0.0))
+def level_thresholds(noise: dict[str, float], floor: float, multiplier: float,
+                     ceiling: float = 0.30) -> pd.Series:
+    """Umbral por estación: max(piso, multiplicador × ruido propio), con TECHO.
+
+    El techo es obligatorio y no un detalle. El umbral se calibra con el ruido historico de la
+    estacion, asi que un drift sostenido entra en ese historico, infla el ruido y sube el umbral
+    que deberia detectarlo: el detector se vuelve ciego justo al caso que existe para cazar.
+    Medido en produccion: Banderas se desplomo un 56 % respecto a su perfil (desplazamiento -0,829)
+    y su umbral habia subido a 1,085, que exige un cambio del 196 %. Nunca disparo.
+
+    Con techo 0,30, un desplazamiento sostenido de mas del 35 % siempre es accionable, por
+    volatil que sea la estacion.
+    """
+    return pd.Series({s: min(max(floor, multiplier * (v if np.isfinite(v) else 0.0)), ceiling)
                       for s, v in noise.items()})
 
 

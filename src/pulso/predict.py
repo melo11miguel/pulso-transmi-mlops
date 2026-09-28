@@ -79,7 +79,8 @@ COEF_NIVEL = 0.40
 # camino real: con el champion rancio (3 dias virtuales) suma +3,61; con un modelo fresco RESTA
 # entre 1,0 y 1,7, porque cuenta dos veces un nivel que el modelo ya aprendio. Por eso se escala
 # por rancidez: nula recien entrenado, plena a partir de HORAS_RANCIO_PLENO.
-HORAS_RANCIO_PLENO = 24.0
+HORAS_RANCIO_SIN = 6.0     # por debajo de esto el modelo esta al dia y corregir resta
+HORAS_RANCIO_PLENO = 24.0  # a partir de aqui la rancidez ya cuesta puntos de verdad
 TOPE_NIVEL = 0.25   # ~28 % de correccion maxima, por si una rafaga se lee mal
 VENTANA_NIVEL = 4   # ultimas 4 filas observadas = 1 hora
 
@@ -90,7 +91,11 @@ def factor_rancidez(model: GbmResidualModel, corte: pd.Timestamp) -> float:
     if fin is None:
         return 1.0
     horas = (pd.Timestamp(corte) - pd.Timestamp(fin)) / pd.Timedelta(hours=1)
-    return float(np.clip(horas / HORAS_RANCIO_PLENO, 0.0, 1.0))
+    # Rampa que arranca a las HORAS_RANCIO_SIN: medido, hasta las 12 h el modelo rinde igual que
+    # recien entrenado (83,4 y 83,2 contra 83,1), asi que corregir ahi solo mete ruido. El
+    # despeñadero esta en las 24 h (80,4) y en las 48 (75,1).
+    tramo = max(HORAS_RANCIO_PLENO - HORAS_RANCIO_SIN, 1e-9)
+    return float(np.clip((horas - HORAS_RANCIO_SIN) / tramo, 0.0, 1.0))
 
 
 def nivel_reciente(model: GbmResidualModel, history: pd.DataFrame,

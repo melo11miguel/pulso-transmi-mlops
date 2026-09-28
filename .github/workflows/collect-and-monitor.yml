@@ -73,11 +73,15 @@ jobs:
                 exit 1
               fi
             fi
-            # Refresco por cadencia, separado de la puerta. Si el champion lleva mas de REFRESCO_H
-            # horas de reloj de datos sin actualizarse, se pide un refresco. No pasa por la
-            # puerta: con la puerta honesta un refresco da ganancia 0 y se rechazaria siempre,
-            # que es lo que congelo el champion tres dias virtuales y costo ~6 puntos.
-            if [ $((i % 12)) -eq 1 ]; then
+            # Refresco por cadencia, separado de la puerta. No pasa por la puerta: con la puerta
+            # honesta un refresco da ganancia 0 y se rechazaria siempre, que es lo que congelo el
+            # champion tres dias virtuales y costo ~6 puntos.
+            #
+            # Cada 3 horas (6 vueltas de 30 min). Medido con el cambio de regimen en curso, la
+            # curva de rancidez es plana hasta 12 h y luego se despena: 83,4 a las 6 h, 83,2 a las
+            # 12, 80,4 a las 24 y 75,1 a las 48. Con 3 h de cadencia caben tres fallos seguidos
+            # antes de llegar al borde.
+            if [ $((i % 6)) -eq 1 ]; then
               gh workflow run train.yml --repo "${{ github.repository }}" \
                  -f modo=refresco -f reason="refresco de cadencia (run ${{ github.run_id }})" \
                  || echo "no se pudo pedir el refresco; se reintenta en la vuelta siguiente"
