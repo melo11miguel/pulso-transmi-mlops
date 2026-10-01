@@ -74,6 +74,16 @@ class ModelConfig:
     # El valor por defecto es 0 A PROPÓSITO: al reconstruir la receta de un champion antiguo hay
     # que darle la suya, no la nueva, o la puerta compararía dos modelos idénticos.
     peso_metrica: float = 0.0
+    # Dias de historia que se usan para entrenar. None = toda la disponible.
+    #
+    # El reto inyecta eventos que reorganizan la demanda entera (Ricaurte +107 %, El Dorado
+    # +102 %, Universidad Nacional -33 %). Con 54 dias de historia el regimen nuevo queda ahogado:
+    # medido sobre los ciclos posteriores al evento, entrenar con todo da 42,72 y con 21 dias
+    # 47,10. Con 14 da 47,87 pero es fragil: con 7 se desploma a 17,54 porque el perfil por hora de
+    # la semana se queda con celdas casi vacias. 21 dias deja tres observaciones por celda.
+    #
+    # Por defecto None, para que `receta_del_champion` reconstruya fielmente a un champion antiguo.
+    dias_de_historia: int | None = None
 
 
 class Forecaster:
@@ -118,6 +128,12 @@ class GbmResidualModel(Forecaster):
     # ---- entrenamiento --------------------------------------------------------------------
     def fit(self, wide: pd.DataFrame) -> GbmResidualModel:
         cfg = self.config
+        if cfg.dias_de_historia:
+            desde = wide.index[-1] - pd.Timedelta(days=cfg.dias_de_historia)
+            recortada = wide.loc[desde:]
+            # Si no hay suficiente para llenar el perfil semanal, se usa todo antes que romperlo.
+            if len(recortada) >= 96 * 10:
+                wide = recortada
         self.stations = [str(c) for c in wide.columns]
         times, demand = wide.index, wide.to_numpy(dtype=float)
         self.train_start, self.train_end = times[0], times[-1]

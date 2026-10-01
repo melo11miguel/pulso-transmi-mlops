@@ -497,6 +497,30 @@ def test_a_refresh_still_refuses_a_broken_model(fake_db):
     assert decide_refresh(86.5, 86.0, smoke_ok=True)[0]
 
 
+def test_training_window_limits_the_history_used(trained):
+    """La ventana corta la historia, pero nunca por debajo de lo que necesita el perfil semanal.
+
+    El reto inyecta eventos que reorganizan la demanda entera. Con 54 dias de historia el regimen
+    nuevo queda ahogado: medido tras el evento, entrenar con todo da 42,72 y con 21 dias 47,10.
+    Con 7 se desploma a 17,54 porque el perfil por hora de la semana se queda sin observaciones,
+    de ahi la guarda de abajo.
+    """
+    wide, _ = trained
+    corto = GbmResidualModel(ModelConfig(dias_de_historia=21)).fit(wide)
+    assert (corto.train_end - corto.train_start) <= pd.Timedelta(days=21, minutes=1)
+
+    # Pedir una ventana absurda no debe dejar al modelo sin datos: se usa todo.
+    minimo = GbmResidualModel(ModelConfig(dias_de_historia=1)).fit(wide)
+    assert minimo.train_start == wide.index[0]
+
+
+def test_the_old_recipe_keeps_the_full_history(trained):
+    """El defecto es None para que la puerta reconstruya fielmente a un champion antiguo."""
+    import pulso.train as T
+    assert ModelConfig().dias_de_historia is None
+    assert T.CONFIG_PRODUCCION.dias_de_historia == 21
+
+
 def test_metric_weights_are_normalised_within_each_station(trained):
     """w = y^p normalizado DENTRO de cada estacion, no global.
 

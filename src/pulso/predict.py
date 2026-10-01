@@ -74,7 +74,12 @@ class Submission:
 #   - la componente de ciudad no aporta nada (coeficiente -0,024); la senal es de estacion;
 #   - aplicarla solo en las franjas donde gana es sobreajuste: la compuerta decidida en el pasado
 #     elige mal y hunde la ganancia de +0,965 a +0,057.
-COEF_NIVEL = 0.40
+# APAGADA. Medida tres veces en el camino real y resta las tres: -1,0 con modelo fresco en el
+# regimen de septiembre, -2,4 aplicando la fase, y -3,0 en el regimen nuevo. El GBM ya absorbe el
+# nivel reciente con sus variables de residual y esta correccion lo cuenta dos veces. Se conserva
+# el codigo porque con un modelo MUY rancio si ayudo (+3,61), y es la red de seguridad si el
+# refresco se rompe: por eso el coeficiente es 0 y no se borra el mecanismo.
+COEF_NIVEL = 0.0
 # La correccion solo sirve cuando el modelo NO tiene el nivel reciente en sus datos. Medido en el
 # camino real: con el champion rancio (3 dias virtuales) suma +3,61; con un modelo fresco RESTA
 # entre 1,0 y 1,7, porque cuenta dos veces un nivel que el modelo ya aprendio. Por eso se escala
