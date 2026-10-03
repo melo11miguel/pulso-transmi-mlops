@@ -13,7 +13,12 @@ from test_features import FAST, synthetic_wide
 
 from pulso.api import PulsoApi, PulsoApiError
 from pulso.features import Profile
-from pulso.model import FeatureMismatchError, GbmResidualModel, ModelConfig
+from pulso.model import (
+    FeatureMismatchError,
+    GbmResidualModel,
+    IncompatibleArtifactError,
+    ModelConfig,
+)
 from pulso.monitor import (
     baseline_accuracy,
     level_noise,
@@ -515,10 +520,41 @@ def test_training_window_limits_the_history_used(trained):
 
 
 def test_the_old_recipe_keeps_the_full_history(trained):
-    """El defecto es None para que la puerta reconstruya fielmente a un champion antiguo."""
+    """Los defectos son los viejos para que la puerta reconstruya fielmente a un champion antiguo."""
     import pulso.train as T
     assert ModelConfig().dias_de_historia is None
+    assert ModelConfig().grano_perfil == "semana"
     assert T.CONFIG_PRODUCCION.dias_de_historia == 21
+    assert T.CONFIG_PRODUCCION.grano_perfil == "semana"
+
+
+def test_the_day_profile_fills_with_a_day_and_the_week_profile_does_not(trained):
+    """Por que la receta cambia de clave: 96 celdas se llenan con un dia, 672 no.
+
+    Es el mecanismo del +10,24 de la receta nueva, medido en 3 bloques alrededor del evento del
+    09-18: con 672 celdas una semana de historia deja la mayoria vacias, asi que la ventana corta
+    solo es viable despues de cambiar la clave.
+    """
+    wide, _ = trained
+    un_dia = wide.loc[wide.index[-1] - pd.Timedelta(days=1):]
+    log = np.log(np.where(un_dia.to_numpy(dtype=float) > 0, un_dia.to_numpy(dtype=float), np.nan))
+
+    dia = Profile(grano="dia").fit(un_dia.index, log)
+    semana = Profile(grano="semana").fit(un_dia.index, log)
+    assert dia.weights.shape[0] == 96 and semana.weights.shape[0] == 672
+    # Con un dia de datos el perfil de franja tiene casi todas sus celdas; el semanal, un septimo.
+    assert (dia.weights > 0).mean() > 0.9
+    assert (semana.weights > 0).mean() < 0.2
+
+
+def test_the_short_window_survives_the_guard_with_the_day_profile(trained):
+    """La guarda del recorte depende de la clave, si no anularia la ventana de tres dias."""
+    wide, _ = trained
+    corto = GbmResidualModel(ModelConfig(dias_de_historia=7, grano_perfil="dia")).fit(wide)
+    assert (corto.train_end - corto.train_start) <= pd.Timedelta(days=7, minutes=1)
+    # Con la clave semanal, 7 dias no alcanzan y se usa todo antes que romper el perfil.
+    semanal = GbmResidualModel(ModelConfig(dias_de_historia=7, grano_perfil="semana")).fit(wide)
+    assert semanal.train_start == wide.index[0]
 
 
 def test_metric_weights_are_normalised_within_each_station(trained):
@@ -669,6 +705,73 @@ def test_predict_batch_names_the_missing_features(trained):
         futuro.predict_next(wide)
     assert exc.value.missing == ["variable_del_futuro"]
     assert "más nuevo que el código" in str(exc.value)
+
+
+def test_an_unusable_artifact_still_delivers_every_target(trained):
+    """Un artefacto que no sirve con este codigo no puede costar un ciclo.
+
+    Es el caso que ya nos costo dos: `load_champion` reventaba FUERA del guard de degradacion, el
+    bucle lo contaba como error de sesion y a los 5 seguidos mataba la corrida. Y el respaldo del
+    perfil no alcanzaba, porque lee `model.profile`, que es parte del artefacto roto. Un target sin
+    entregar cuenta como prediccion cero, asi que entregar el perfil peor siempre gana.
+    """
+    from pulso.predict import PerfilDeEmergencia, cargar_champion
+
+    wide, _ = trained
+    cycle = _cycle(wide)
+
+    class RegistroRoto:
+        def champion(self):
+            return {"version": "gbm-roto", "trained_at": "2026-09-20T09:00:00Z",
+                    "training_data_end": "2026-09-20T09:00:00Z"}
+
+        def load(self, version):
+            raise RuntimeError("pickle de una version mas nueva")
+
+    fila, modelo = cargar_champion(RegistroRoto(), wide)
+    assert fila["version"] == "gbm-roto"
+    assert isinstance(modelo, PerfilDeEmergencia), "debe degradar, no propagar"
+
+    predictions, fallback = build_predictions(modelo, wide, cycle)
+    assert len(predictions) == len(cycle["targets"]), "todos los targets entregados"
+    assert fallback == len(cycle["targets"]), "todos por el perfil, y contados para el monitor"
+    assert (predictions["value"] > 0).all() and predictions["value"].notna().all()
+
+
+def test_the_emergency_profile_does_not_touch_the_broken_artifact(trained):
+    """El perfil de emergencia se ajusta con la historia y el codigo de ahora, no con el artefacto."""
+    from pulso.predict import PerfilDeEmergencia
+
+    wide, _ = trained
+    emergencia = PerfilDeEmergencia(wide, "prueba")
+    assert emergencia.stations == [str(c) for c in wide.columns]
+    assert emergencia.profile.fit_end == wide.index[-1]
+    # Declara la incompatibilidad por tipo, para que el guard degrade en vez de gastar reintentos.
+    with pytest.raises(IncompatibleArtifactError):
+        emergencia.predict_next(wide)
+
+
+def test_a_day_key_artifact_is_readable_by_this_code_in_both_directions(trained):
+    """El artefacto es un pickle, asi que lo que guarda el perfil es contrato entre versiones.
+
+    Hacia atras: un artefacto entrenado antes de que existiera la opcion no trae `grano` y debe
+    leerse como semanal. Hacia adelante: el pickle no puede llevar NINGUNA funcion, porque se
+    encurte por referencia al modulo y un proceso con codigo viejo no podria ni deserializarlo,
+    fallo que escaparia del guard igual que el de `p_curv`.
+    """
+    import pickle
+
+    wide, _ = trained
+    log = np.log(np.where(wide.to_numpy(dtype=float) > 0, wide.to_numpy(dtype=float), np.nan))
+
+    dia = Profile(grano="dia").fit(wide.index, log)
+    assert not any(callable(v) for v in vars(dia).values()), "hay una funcion en el pickle"
+    assert pickle.loads(pickle.dumps(dia))._grano == "dia"
+
+    viejo = Profile().fit(wide.index, log)
+    del vars(viejo)["grano"]
+    assert pickle.loads(pickle.dumps(viejo))._grano == "semana"
+    assert pickle.loads(pickle.dumps(viejo))._celdas == 672
 
 
 def test_level_correction_moves_predictions_toward_the_recent_level(trained):

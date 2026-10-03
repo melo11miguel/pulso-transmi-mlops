@@ -39,8 +39,33 @@ def to_wide(obs: pd.DataFrame, stations: list[str] | None = None) -> pd.DataFram
 
 
 def how_index(times: pd.DatetimeIndex) -> np.ndarray:
-    """Hora de la semana 0..671 (lunes 00:00 = 0)."""
+    """Franja de la semana 0..671 (lunes 00:00 = 0)."""
     return (times.dayofweek * SLOTS_PER_DAY + times.hour * 4 + times.minute // 15).to_numpy()
+
+
+def dow_index(times: pd.DatetimeIndex) -> np.ndarray:
+    """Franja del DIA 0..95, sin distinguir el dia de la semana.
+
+    Son 96 celdas en vez de 672, asi que el perfil se llena con un dia de datos en vez de una
+    semana. Pierde la distincion entre martes y domingo, y a cambio puede seguir un cambio de
+    regimen en dias en vez de en semanas.
+
+    Medido en 3 bloques temporales de 16 ciclos alrededor del evento del 09-18, contra la receta
+    vigente (clave semanal, toda la historia): la clave sola gana +2,10 de media y la ventana de
+    21 dias sola +3,63, pero juntas, clave de dia con 7 dias, +10,24 ganando los 3 bloques. El
+    efecto es superaditivo porque es la clave la que hace viable una ventana corta: con 672 celdas
+    una semana de datos deja la mayoria vacias.
+
+    La ventana se fija en 7 dias y no en 3 por dos razones. Con 3 dias la media sube mas en
+    regimen estable (+7,55) pero el bloque del quiebre se desploma -11,42, y una receta que se
+    parte justo cuando el reto inyecta un evento no sirve. Y con una semana exacta cada celda
+    promedia un lunes, un martes y asi, de modo que el perfil queda sin sesgo de dia de la semana
+    precisamente donde la clave lo habia perdido.
+    """
+    return (times.hour * 4 + times.minute // 15).to_numpy()
+
+
+INDICE_PERFIL = {"semana": (how_index, HOURS_OF_WEEK), "dia": (dow_index, SLOTS_PER_DAY)}
 
 
 def extend_grid(wide: pd.DataFrame, steps: int) -> pd.DataFrame:
@@ -52,13 +77,37 @@ def extend_grid(wide: pd.DataFrame, steps: int) -> pd.DataFrame:
 class Profile:
     """Media logarítmica por (hora de la semana, estación), con decaimiento opcional por edad."""
 
-    def __init__(self, half_life_days: float | None = None) -> None:
+    def __init__(self, half_life_days: float | None = None, grano: str = "semana") -> None:
         self.half_life_days = half_life_days
+        self.grano = grano
         self.sums: np.ndarray | None = None
         self.weights: np.ndarray | None = None
         self.station_mean: np.ndarray | None = None
         self.fit_start: pd.Timestamp | None = None
         self.fit_end: pd.Timestamp | None = None
+
+    @property
+    def _grano(self) -> str:
+        """La clave del perfil, tolerante a artefactos viejos.
+
+        El artefacto que viaja al predictor es un pickle de este objeto, asi que lo que guardo aqui
+        es contrato entre versiones del codigo. Guardo solo la cadena y resuelvo la funcion indice
+        al usarla: una funcion como atributo de instancia se encurte POR REFERENCIA al modulo, y un
+        proceso con codigo viejo que no tenga ese nombre no puede ni deserializar el artefacto. Eso
+        no caeria en el guard de FeatureMismatchError, caeria en el except del bucle de la sesion,
+        y a los 5 errores seguidos la sesion muere: es como perdimos dos ciclos con `p_curv`.
+
+        El getattr con defecto cubre el otro sentido: un artefacto entrenado antes de que existiera
+        esta opcion no trae el atributo, y para ese la clave correcta es la semanal.
+        """
+        return getattr(self, "grano", "semana")
+
+    @property
+    def _celdas(self) -> int:
+        return INDICE_PERFIL[self._grano][1]
+
+    def _indice(self, times: pd.DatetimeIndex) -> np.ndarray:
+        return INDICE_PERFIL[self._grano][0](times)
 
     def _w(self, times: pd.DatetimeIndex) -> np.ndarray:
         if not self.half_life_days:
@@ -71,9 +120,9 @@ class Profile:
         w = self._w(times)[:, None]
         valid = ~np.isnan(log_demand)
         n_stations = log_demand.shape[1]
-        self.sums = np.zeros((HOURS_OF_WEEK, n_stations))
-        self.weights = np.zeros((HOURS_OF_WEEK, n_stations))
-        how = how_index(times)
+        self.sums = np.zeros((self._celdas, n_stations))
+        self.weights = np.zeros((self._celdas, n_stations))
+        how = self._indice(times)
         np.add.at(self.sums, how, np.where(valid, log_demand * w, 0.0))
         np.add.at(self.weights, how, np.where(valid, w, 0.0))
         self.station_mean = np.nanmean(log_demand, axis=0)
@@ -82,7 +131,7 @@ class Profile:
     def matrix(self, times: pd.DatetimeIndex, log_demand: np.ndarray | None = None) -> np.ndarray:
         """Perfil (tiempo × estación). Con `log_demand`, los instantes dentro de la ventana de
         ajuste usan leave-one-out; el resto (futuro) usa la media simple."""
-        how = how_index(times)
+        how = self._indice(times)
         with np.errstate(invalid="ignore", divide="ignore"):
             plain = self.sums[how] / self.weights[how]
         plain = np.where(self.weights[how] > 0, plain, self.station_mean[None, :])

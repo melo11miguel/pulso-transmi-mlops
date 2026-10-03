@@ -30,7 +30,27 @@ from .monitor import level_noise
 PRED_COLUMNS = ["origin_idx", "station_idx", "horizon", "target_at", "prediction"]
 
 
-class FeatureMismatchError(RuntimeError):
+class IncompatibleArtifactError(RuntimeError):
+    """El artefacto del champion no se puede usar con este código.
+
+    Base comun de los fallos permanentes de compatibilidad. Importa que sean un tipo propio: el
+    bucle de la sesion cuenta errores seguidos y a los 5 se mata, asi que un fallo que reintentar
+    no arregla tiene que degradar al perfil en vez de gastar reintentos. Las subclases distinguen
+    la causa, pero el camino de inferencia las trata igual.
+    """
+
+
+class UnusableArtifactError(IncompatibleArtifactError):
+    """El artefacto no se pudo descargar, deserializar o usar con este código.
+
+    Es el caso general del anterior: no es que falte una variable, es que el objeto mismo no sirve
+    (hash que no cuadra, pickle de una version mas nueva, perfil con una clave que este codigo no
+    conoce). Antes esto reventaba en `registry.load_champion()`, fuera del guard, y se comia los
+    5 reintentos del bucle hasta matar la sesion.
+    """
+
+
+class FeatureMismatchError(IncompatibleArtifactError):
     """El artefacto pide variables que este código no sabe construir.
 
     Pasa cuando se promueve un modelo con una variable nueva mientras hay procesos en vuelo con
@@ -84,6 +104,14 @@ class ModelConfig:
     #
     # Por defecto None, para que `receta_del_champion` reconstruya fielmente a un champion antiguo.
     dias_de_historia: int | None = None
+    # Clave del perfil: "semana" son 672 celdas (franja de la semana) y necesita una semana entera
+    # de datos para llenarse; "dia" son 96 (franja del dia) y se llena con un dia, a costa de no
+    # distinguir martes de domingo. Con un regimen de dos dias de vida esa diferencia lo es todo:
+    # medida en 3 bloques alrededor del evento del 09-18, la clave de dia con 7 dias de historia
+    # gana +10,24 contra la receta vigente, ganando los 3 bloques. Ver `dow_index` en features.
+    #
+    # Por defecto "semana" para que `receta_del_champion` reconstruya fielmente a uno antiguo.
+    grano_perfil: str = "semana"
 
 
 class Forecaster:
@@ -117,7 +145,7 @@ class GbmResidualModel(Forecaster):
     def __init__(self, config: ModelConfig | None = None) -> None:
         self.config = config or ModelConfig()
         self.feature_columns = [c for c in FEATURE_COLUMNS if c not in self.config.drop_features]
-        self.profile = Profile(self.config.half_life_days)
+        self.profile = Profile(self.config.half_life_days, self.config.grano_perfil)
         self.gbm: HistGradientBoostingRegressor | None = None
         self.stations: list[str] = []
         self.train_start: pd.Timestamp | None = None
@@ -131,8 +159,11 @@ class GbmResidualModel(Forecaster):
         if cfg.dias_de_historia:
             desde = wide.index[-1] - pd.Timedelta(days=cfg.dias_de_historia)
             recortada = wide.loc[desde:]
-            # Si no hay suficiente para llenar el perfil semanal, se usa todo antes que romperlo.
-            if len(recortada) >= 96 * 10:
+            # El minimo depende de la clave del perfil, no es un numero suelto: el perfil semanal
+            # reparte la historia en 672 celdas y con menos de diez dias se queda sin observaciones
+            # en muchas; el de franja del dia usa 96 y le basta un par de dias. Antes esta guarda
+            # era un 10 fijo, que habria anulado en silencio la ventana de tres dias.
+            if len(recortada) >= 96 * (10 if cfg.grano_perfil == "semana" else 2):
                 wide = recortada
         self.stations = [str(c) for c in wide.columns]
         times, demand = wide.index, wide.to_numpy(dtype=float)

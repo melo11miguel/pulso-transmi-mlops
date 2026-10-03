@@ -27,9 +27,13 @@ import pandas as pd
 from .api import PulsoApi, PulsoApiError
 from .config import Settings
 from .dbdata import load_wide
-from .features import STEP
+from .features import STEP, Profile
 from .ingest import run_collector
-from .model import FeatureMismatchError, GbmResidualModel
+from .model import (
+    GbmResidualModel,
+    IncompatibleArtifactError,
+    UnusableArtifactError,
+)
 from .registry import ModelRegistry, RegistryError, current_git_commit
 from .runlog import pipeline_run
 from .store import SupabaseStore
@@ -188,6 +192,51 @@ def nivel_reciente(model: GbmResidualModel, history: pd.DataFrame,
             if np.isfinite(v)}
 
 
+class PerfilDeEmergencia:
+    """Pronosticador de ultimo recurso, ajustado aqui con el codigo que corre ahora mismo.
+
+    Existe por una regla del reto: un target que no se entrega cuenta como prediccion CERO, asi
+    que perder un ciclo cuesta mucho mas que entregarlo con el modelo peor. Cuando el artefacto del
+    champion no se puede usar, el respaldo del perfil que ya tiene `build_predictions` tampoco
+    sirve, porque lee `model.profile`, que es parte del artefacto roto. Este objeto reconstruye un
+    perfil estacional desde la historia que acabamos de leer, sin tocar el artefacto, y expone lo
+    justo que `build_predictions` necesita: `stations`, `profile` y un `predict_next` que declara
+    la incompatibilidad para que el camino entre degradado.
+
+    Vale aproximadamente lo que el baseline de solo perfil, unos 51 de accuracy frente a los ~57
+    del modelo, contra 0 de un ciclo perdido.
+    """
+
+    def __init__(self, history: pd.DataFrame, motivo: str) -> None:
+        self.motivo = motivo
+        self.stations = [str(c) for c in history.columns]
+        valores = history.to_numpy(dtype=float)
+        self.profile = Profile().fit(history.index, np.log(np.where(valores > 0, valores, np.nan)))
+        self.train_end = history.index[-1]
+
+    def predict_next(self, history: pd.DataFrame) -> pd.DataFrame:
+        raise UnusableArtifactError(self.motivo)
+
+
+def cargar_champion(registry: ModelRegistry, history: pd.DataFrame) -> tuple[dict, Any]:
+    """Fila del champion y su modelo, cayendo al perfil de emergencia si el artefacto no sirve.
+
+    La fila se lee de la base (barato y sin pickle) y solo la descarga del artefacto puede fallar.
+    Separarlas es el punto: antes `load_champion` hacia las dos cosas y su excepcion escapaba del
+    guard de degradacion, se contaba como error de sesion y a los 5 seguidos mataba la corrida.
+    """
+    row = registry.champion()
+    if row is None:
+        raise RegistryError("No hay modelo champion: ejecute el workflow de entrenamiento")
+    try:
+        return row, registry.load(row["version"])
+    except Exception as exc:  # noqa: BLE001 - cualquier fallo del artefacto degrada, no mata
+        log.error("El artefacto del champion %s no se puede usar con este codigo (%s: %s); "
+                  "se entrega el perfil estacional reconstruido aqui", row["version"],
+                  type(exc).__name__, exc)
+        return row, PerfilDeEmergencia(history, f"{type(exc).__name__}: {exc}")
+
+
 def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
                       cycle: dict[str, Any]) -> tuple[pd.DataFrame, int]:
     """Valor para cada target del ciclo, usando solo `history` (ya recortada al corte)."""
@@ -201,14 +250,14 @@ def build_predictions(model: GbmResidualModel, history: pd.DataFrame,
         history = pd.concat([history, pd.DataFrame(np.nan, index=pad, columns=history.columns)])
     try:
         model_out = model.predict_next(history)
-    except FeatureMismatchError as exc:
+    except IncompatibleArtifactError as exc:
         # El artefacto es más nuevo que este proceso. Reintentar no lo arregla, y quedarse sin
         # entregar es lo peor que puede pasar: un target ausente cuenta como predicción cero y
         # hunde la cobertura. Se deja `by_key` vacío a propósito para que cada target caiga por el
         # respaldo de abajo, que usa el perfil estacional del propio artefacto y no necesita
         # ninguna variable construida. Queda contado en `fallback_targets`, que ya vigila el monitor.
-        log.error("Modelo incompatible con este código (falta %s): se entrega el perfil estacional",
-                  ", ".join(exc.missing))
+        faltan = ", ".join(getattr(exc, "missing", None) or [str(exc)])
+        log.error("Modelo incompatible con este código (%s): se entrega el perfil estacional", faltan)
         model_out = None
     degradado = model_out is None
     by_key = ({} if degradado
@@ -360,8 +409,8 @@ def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
 
     if sync is not None:
         sync()
-    champion_row, model = registry.load_champion()
     history = load_wide(db, until=cycle["data_cutoff"])
+    champion_row, model = cargar_champion(registry, history)
     predictions, fallback = build_predictions(model, history, cycle)
     payload = build_payload(
         cycle, predictions, model_version=champion_row["version"],
