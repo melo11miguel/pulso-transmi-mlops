@@ -524,8 +524,8 @@ def test_the_old_recipe_keeps_the_full_history(trained):
     import pulso.train as T
     assert ModelConfig().dias_de_historia is None
     assert ModelConfig().grano_perfil == "semana"
-    assert T.CONFIG_PRODUCCION.dias_de_historia == 21
-    assert T.CONFIG_PRODUCCION.grano_perfil == "semana"
+    assert T.CONFIG_PRODUCCION.dias_de_historia == 7
+    assert T.CONFIG_PRODUCCION.grano_perfil == "dia"
 
 
 def test_the_day_profile_fills_with_a_day_and_the_week_profile_does_not(trained):
@@ -550,7 +550,8 @@ def test_the_day_profile_fills_with_a_day_and_the_week_profile_does_not(trained)
 def test_the_short_window_survives_the_guard_with_the_day_profile(trained):
     """La guarda del recorte depende de la clave, si no anularia la ventana de tres dias."""
     wide, _ = trained
-    corto = GbmResidualModel(ModelConfig(dias_de_historia=7, grano_perfil="dia")).fit(wide)
+    import pulso.train as T
+    corto = GbmResidualModel(T.CONFIG_PRODUCCION).fit(wide)
     assert (corto.train_end - corto.train_start) <= pd.Timedelta(days=7, minutes=1)
     # Con la clave semanal, 7 dias no alcanzan y se usa todo antes que romper el perfil.
     semanal = GbmResidualModel(ModelConfig(dias_de_historia=7, grano_perfil="semana")).fit(wide)

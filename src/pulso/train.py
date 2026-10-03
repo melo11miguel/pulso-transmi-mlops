@@ -62,7 +62,7 @@ class TrainResult:
 # Receta de produccion. El defecto de ModelConfig deja `peso_metrica=0` para poder reconstruir
 # fielmente la receta de un champion antiguo; los candidatos nuevos se entrenan con la receta
 # vigente, que es esta.
-CONFIG_PRODUCCION = ModelConfig(peso_metrica=0.5, dias_de_historia=21)
+CONFIG_PRODUCCION = ModelConfig(peso_metrica=0.5, dias_de_historia=7, grano_perfil="dia")
 
 
 def holdout_fold(wide: pd.DataFrame, days: int = HOLDOUT_DAYS) -> Fold:
