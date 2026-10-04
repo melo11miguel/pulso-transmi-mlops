@@ -46,6 +46,9 @@ class CollectorResult:
     clock_state: str | None = None
     replayed_from_start: bool = False
     truncated: bool = False
+    # Filas del esquema 2 sin valor usable (`quality` distinto de "observed"). Se omiten en vez de
+    # guardarse como cero, y se cuentan aqui para que no desaparezcan sin dejar rastro.
+    omitidas: int = 0
 
 
 def _clock_state(api: PulsoApi) -> str | None:
@@ -82,7 +85,12 @@ def run_collector(api: PulsoApi, store: Store, *, page_size: int = 1000, max_pag
                     continue
                 raise
 
-            rows = validate_observations(page.get("data", []), known)
+            omitidas: list[dict] = []
+            rows = validate_observations(page.get("data", []), known, omitidas=omitidas)
+            if omitidas:
+                result.omitidas += len(omitidas)
+                log.warning("%d observaciones sin valor usable, omitidas (ejemplo: %s)",
+                            len(omitidas), omitidas[0])
             next_cursor = page.get("next_cursor")
             after = next_cursor if next_cursor is not None else cursor
             result.pages += 1

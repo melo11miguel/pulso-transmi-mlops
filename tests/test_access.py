@@ -50,6 +50,81 @@ def test_validate_accepts_integer_valued_float():
     assert validate_observations([{**GOOD, "demand": 10.0}], KNOWN)[0]["demand"] == 10
 
 
+# ------------------------------------------------- calidad: esquema 2 de la API (0.9.0)
+V2 = {"station_id": "02300", "observed_at": "2026-09-16T10:15:00-05:00", "schema_version": 2,
+      "measurement": {"value": "546.00", "unit": "passengers", "quality": "observed"}}
+
+
+def test_validate_reads_the_nested_string_value_of_schema_2():
+    """La API 0.9.0 movio la demanda a `measurement.value` y la manda como CADENA.
+
+    Este es el fallo que tumbo la ingesta: el colector leia `row["demand"]`, que ya no existe, y
+    `validate_observations` lo rechazaba como «demanda no numérica: None». Como la ingesta es el
+    primer paso de la sesion de prediccion, cayo la sesion entera y el relevo la relanzo en bucle.
+    """
+    fila = validate_observations([V2], KNOWN)[0]
+    assert fila["demand"] == 546 and isinstance(fila["demand"], int)
+    assert fila["observed_at"] == "2026-09-16T10:15:00-05:00"
+
+
+def test_both_schemas_coexist_in_one_page():
+    """El stream mezcla los dos esquemas segun donde este el cursor, no es una migracion limpia."""
+    otro = {**V2, "station_id": "03000"}
+    salida = validate_observations([GOOD, otro], KNOWN)
+    assert [f["demand"] for f in salida] == [10, 546]
+
+
+def test_a_missing_measurement_is_skipped_and_counted_never_stored_as_zero():
+    """Una observacion ausente es DESCONOCIDA, no un cero.
+
+    Guardar cero hundiria el perfil estacional de esa franja, que es una media logaritmica. La
+    rejilla de `to_wide` ya deja NaN en los instantes que faltan y el modelo lo maneja.
+    """
+    falta = {**V2, "measurement": {"value": None, "unit": "passengers", "quality": "missing"}}
+    omitidas: list[dict] = []
+    assert validate_observations([falta], KNOWN, omitidas=omitidas) == []
+    assert omitidas == [{"station_id": "02300", "observed_at": "2026-09-16T10:15:00-05:00",
+                         "quality": "missing"}]
+
+
+def test_an_unknown_quality_is_skipped_but_an_unknown_unit_is_fatal():
+    """La asimetria es deliberada y es la leccion del incidente.
+
+    `quality` califica UNA fila, asi que un valor nuevo solo la omite y la cobertura sobrevive.
+    `unit` cambia el SIGNIFICADO del numero, asi que ingerirla seria reescalar la demanda en
+    silencio: eso si tiene que fallar a la vista.
+    """
+    futura = {**V2, "measurement": {"value": "546.00", "unit": "passengers", "quality": "estimated"}}
+    omitidas: list[dict] = []
+    assert validate_observations([futura], KNOWN, omitidas=omitidas) == []
+    assert omitidas[0]["quality"] == "estimated"
+
+    with pytest.raises(DataQualityError, match="unidad inesperada"):
+        validate_observations([{**V2, "measurement": {**V2["measurement"], "unit": "hundreds"}}],
+                              KNOWN)
+
+
+@pytest.mark.parametrize("medida, mensaje", [
+    ({"value": "abc", "unit": "passengers", "quality": "observed"}, "no numérico"),
+    ({"value": "10.5", "unit": "passengers", "quality": "observed"}, "no entera"),
+    ({"value": "-1", "unit": "passengers", "quality": "observed"}, "fuera de rango"),
+    ({"value": "100001", "unit": "passengers", "quality": "observed"}, "fuera de rango"),
+])
+def test_schema_2_keeps_every_other_check(medida, mensaje):
+    """Aceptar el esquema nuevo no aflojo ninguna otra validacion."""
+    with pytest.raises(DataQualityError, match=mensaje):
+        validate_observations([{**V2, "measurement": medida}], KNOWN)
+
+
+def test_schema_1_with_a_null_demand_still_fails_hard():
+    """El esquema 1 no tiene anotacion de calidad, asi que ahi un null es violacion del contrato.
+
+    Sin esta distincion, el arreglo del esquema 2 habria aflojado el esquema 1 en silencio.
+    """
+    with pytest.raises(DataQualityError, match="no numérica"):
+        validate_observations([{**GOOD, "demand": None}], KNOWN)
+
+
 def test_quality_report_detects_gaps_and_duplicates():
     ts = pd.date_range("2026-09-16 00:00", periods=4, freq="15min", tz="America/Bogota")
     obs = pd.DataFrame({"station_id": "02300", "observed_at": ts, "demand": [1, 2, 3, 4]})
