@@ -1,7 +1,10 @@
 name: Vigilar el SDK del profesor
 
 # Avisa cuando el repositorio del profesor cambia, para no enterarnos tarde de un ajuste en las
-# reglas, en la plantilla o en la guía.
+# reglas, en la plantilla o en la guía. Y vigila tambien la VERSION DE LA API desplegada, que es
+# una fuente de roturas distinta: el 2026-10-04 la API paso de 0.8.0 a 0.9.0 y cambio el esquema
+# del stream de observaciones sin que eso fuera un commit en el repositorio del SDK, asi que este
+# vigilante no abrio ningun issue mientras la ingesta llevaba horas cayendose.
 #
 # Dos decisiones que vale la pena explicar:
 #
@@ -15,7 +18,9 @@ name: Vigilar el SDK del profesor
 
 on:
   schedule:
-    - cron: "17 7,19 * * *"   # dos veces al dia, ~12 h aparte; minuto fuera de :00 a proposito
+    # Cada 2 h. Antes eran dos veces al dia, y para el repositorio del SDK sobraba, pero un cambio
+    # en la API desplegada nos rompe la ingesta en minutos: enterarnos hasta 12 h despues es tarde.
+    - cron: "17 */2 * * *"    # minuto fuera de :00 a proposito
   workflow_dispatch:
 
 permissions:
@@ -28,6 +33,7 @@ concurrency:
 
 env:
   SDK: uexternadojz/pulso-transmi-sdk
+  PULSO_API_URL: ${{ vars.PULSO_API_URL }}
 
 jobs:
   watch:
@@ -92,6 +98,56 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "El SDK del profesor cambio (${previo:0:7} → ${actual:0:7})" \
             --body-file cuerpo.md
+
+      # Fuente de roturas distinta a la del repositorio: la API desplegada puede cambiar de
+      # contrato sin un commit. `info.version` del openapi es publico y basta para detectarlo.
+      # No falla el job a proposito, por la misma razon que el paso anterior: el monitor del
+      # pipeline vigila los workflows fallidos y un fallo deliberado ensuciaria esa señal.
+      - name: Comparar la version de la API desplegada
+        if: always() && env.PULSO_API_URL != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p estado
+          actual=$(curl -sS -m 30 "$PULSO_API_URL/openapi.json" | jq -r '.info.version')
+          if [ -z "$actual" ] || [ "$actual" = "null" ]; then
+            echo "No se pudo leer la version de la API; se deja el estado como estaba." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          previo=$(cat estado/api_version 2>/dev/null || true)
+          echo "$actual" > estado/api_version
+          echo "API actual=$actual previo=${previo:-ninguno}"
+
+          if [ -z "$previo" ]; then
+            echo "Primera lectura de la API: se registra $actual sin avisar." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$previo" = "$actual" ]; then
+            echo "La API sigue en \`$actual\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## La API desplegada cambio de version"
+            echo
+            echo "De \`$previo\` a \`$actual\`."
+            echo
+            echo "Revisar el contrato ANTES de que rompa la ingesta. Lo que ya nos paso una vez:"
+            echo "la 0.9.0 movio la demanda de \`demand\` plano a \`measurement.value\` como"
+            echo "cadena y agrego \`quality: missing\`. Puntos a revisar:"
+            echo
+            echo "- \`/v1/stream/observations\`: forma de cada fila y \`schema_version\`"
+            echo "- \`/v1/forecast-cycles/current\`: targets y \`closes_at\`"
+            echo "- \`/v1/submissions\`: forma del envio y del recibo"
+          } > api.md
+          cat api.md >> "$GITHUB_STEP_SUMMARY"
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "La API del reto cambio de version ($previo → $actual)" \
+            --body-file api.md
 
       - name: Guardar el SHA visto
         if: always()

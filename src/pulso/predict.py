@@ -407,8 +407,21 @@ def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
             db.update("forecast_cycles", {"outcome": "missed"}, {"cycle_id": f"eq.{cycle_id}"})
         return {"status": "skipped", "reason": "cycle_closed", "cycle_id": cycle_id}
 
+    sync_error = None
     if sync is not None:
-        sync()
+        try:
+            sync()
+        except Exception as exc:  # noqa: BLE001 - la cobertura pesa mas que la frescura
+            # Entregar con historia un poco vieja es MUCHO mejor que no entregar: un target que
+            # falta cuenta como prediccion CERO, y la cobertura es lo unico que no se recupera.
+            # Antes esta llamada estaba desnuda dentro del `try` de la sesion, asi que un colector
+            # roto reventaba cada ciclo y a los 5 seguidos mataba la sesion entera. Paso de verdad:
+            # la API 0.9.0 cambio el esquema del stream, la ingesta empezo a fallar y perdimos unas
+            # 18 horas virtuales de cobertura por un problema que no tocaba al modelo.
+            # El fallo no se traga: queda en `ingestion_runs`, en el log como error y en el resumen.
+            sync_error = f"{type(exc).__name__}: {exc}"
+            log.error("La sincronizacion previa fallo (%s); se predice con la historia que ya hay",
+                      sync_error)
     history = load_wide(db, until=cycle["data_cutoff"])
     champion_row, model = cargar_champion(registry, history)
     predictions, fallback = build_predictions(model, history, cycle)
@@ -421,6 +434,8 @@ def run_inference(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
     summary = {"cycle_id": cycle_id, "model_version": champion_row["version"],
                "n_predictions": len(predictions), "fallback_targets": fallback,
                "payload_hash": payload_hash(payload)}
+    if sync_error is not None:
+        summary["sync_error"] = sync_error
     if dry_run:
         return {"status": "dry_run", **summary}
 

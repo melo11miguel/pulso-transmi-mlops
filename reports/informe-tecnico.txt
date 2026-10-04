@@ -323,6 +323,80 @@ versiones distintas que pueden desincronizarse. El registro debe declarar sus
 requisitos y el ejecutor debe degradar, no morir.
 
 
+11b. INCIDENTE DEL 2026-10-04 (postmortem)
+-------------------------------------------------------------------------------
+El mismo patron que el del 09-24, por una causa distinta: algo externo cambio,
+el sistema lo trato como error transitorio y se mato reintentando.
+
+QUE PASO. La API del reto paso de 0.8.0 a 0.9.0 y movio la demanda en el stream
+de observaciones: ya no viene como entero plano en `demand`, sino anidada en
+`measurement` con `value` como CADENA decimal ("546.00"), mas `unit` y
+`quality`. El colector seguia leyendo row["demand"], no existia, y el control de
+calidad lo rechazaba como «demanda no numerica: None».
+
+IMPACTO. La ingesta es el PRIMER paso del workflow de prediccion, asi que al
+fallar se llevo por delante la sesion entera, que es la que da la cobertura. Y
+como el relevo encadena la sesion siguiente con `if: always()` tras esperar un
+minuto, cada fallo lanzaba otra corrida: mas de 18 fallos seguidos en 20 minutos
+quemando minutos de Actions sin entregar nada. Unas 18 horas virtuales de ciclos
+sin entregar. Ni uno quedo marcado como 'missed': la sesion nunca llego al paso
+que registra el ciclo, asi que no aparecen en forecast_cycles. El accuracy no
+tuvo nada que ver, igual que la vez anterior.
+
+POR QUE NO SE DETECTO A TIEMPO. El vigilante del SDK mira el REPOSITORIO del
+profesor, y este cambio estaba en la API DESPLEGADA, que no deja commit. Corria
+dos veces al dia; aun habiendo mirado lo correcto, habria avisado hasta 12 h
+tarde.
+
+CORRECCIONES, UNA POR CADA COSA QUE FALLO:
+
+  1. El control de calidad acepta los dos esquemas. Las dos ramas siguen vivas
+     porque el stream los MEZCLA en la misma pagina segun donde este el cursor:
+     tratarlo como migracion limpia perderia historia.
+
+  2. La condicion nueva `quality: "missing"` con valor nulo se omite y se cuenta
+     en CollectorResult.omitidas, nunca se guarda como cero. Una observacion
+     ausente es DESCONOCIDA; un cero hundiria la media logaritmica del perfil de
+     esa franja, y la rejilla de to_wide ya deja NaN donde falta el dato.
+
+  3. Asimetria deliberada entre `unit` y `quality`, que es la leccion fina.
+     `quality` califica UNA fila, asi que un valor futuro solo la omite y la
+     cobertura sobrevive. `unit` cambia el SIGNIFICADO del numero, asi que una
+     unidad inesperada sigue siendo error duro: ingerirla seria reescalar la
+     demanda en silencio. Y el esquema 1, que no tiene anotacion de calidad,
+     sigue fallando fuerte ante un nulo, para que el arreglo no aflojara el
+     contrato viejo.
+
+  4. La sincronizacion previa a cada entrega ya no puede costar el ciclo. Estaba
+     desnuda dentro del try de la sesion, asi que un colector roto reventaba
+     CADA ciclo y a los cinco la sesion moria. Ahora se atrapa, se predice con
+     la historia que ya hay y el fallo queda en el resumen como `sync_error`.
+
+  5. El paso de ingesta del workflow lleva continue-on-error. Un problema de
+     datos no puede tumbar la sesion que da la cobertura.
+
+  6. El relevo espera 10 minutos cuando la sesion fallo y uno cuando termino
+     bien. Un fallo persistente cuesta 6 corridas por hora en vez de 30, sin
+     dejar de reintentar a tiempo para la ventana de 25 min de cada ciclo.
+
+  7. El vigilante compara tambien `info.version` del openapi de la API y abre
+     issue cuando cambia, cada 2 h en vez de cada 12.
+
+Diez pruebas de regresion fijan el comportamiento: ocho sobre el contrato del
+esquema 2 (valor anidado como cadena, los dos esquemas en una pagina, ausencia
+omitida y contada, calidad desconocida omitida pero unidad desconocida fatal, el
+resto de validaciones intactas, y el nulo del esquema 1 siguiendo fatal) y dos
+sobre la cobertura (un colector roto no cuesta el ciclo, y ya no gasta los
+reintentos de la sesion hasta matarla).
+
+LECCION GENERAL. La del 09-24 fue que el artefacto y el codigo son dos versiones
+que se desincronizan. Esta es la misma idea un paso afuera: el contrato de un
+proveedor externo tambien es una version, cambia sin avisar, y el unico diseño
+que aguanta es el que distingue lo que invalida el dato de lo que solo lo
+anota. Y una regla de operacion: el paso que trae datos NUNCA debe poder tumbar
+al paso que entrega.
+
+
 12. SEGURIDAD Y PRIVACIDAD
 -------------------------------------------------------------------------------
 - Las credenciales viven solo en GitHub Actions Secrets. Ninguna esta en el
@@ -384,5 +458,8 @@ Interruptor general: la variable de repositorio PIPELINE_ENABLED. Si no esta en
   poca diferencia para una serie que se observa cada 15 minutos.
 - Las estaciones pequenas arrastran el promedio sin ponderar (seccion 1b).
 - Rotar la API key y la clave de servicio de Supabase al cerrar el proyecto.
+- Re-entrenar en cuanto la ingesta este al dia: el champion quedo con datos hasta
+  2026-09-20T12:00Z mientras el reloj virtual llegaba a 09-21T07:00Z, 19 horas
+  virtuales de rancidez por el incidente del 11b.
 
 ===============================================================================

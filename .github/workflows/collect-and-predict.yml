@@ -43,7 +43,17 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m pip install -e . --no-deps
+      # NO puede tumbar el job. La ingesta es el primer paso, asi que cuando falla se lleva por
+      # delante la sesion de prediccion, que es la que da la cobertura. Paso el 2026-10-04: la API
+      # 0.9.0 cambio el esquema del stream, `pulso.ingest` empezo a fallar y la sesion nunca llego
+      # a correr, asi que perdimos unas 18 horas virtuales de ciclos por un problema que no tocaba
+      # al modelo. Un target que falta cuenta como prediccion CERO, y la cobertura no se recupera.
+      #
+      # La señal no se pierde: el colector deja la corrida con estado de error en `ingestion_runs`,
+      # el paso queda marcado en rojo en la interfaz y la sesion registra `sync_error` en cada
+      # ciclo que entregue con datos viejos.
       - name: Recolectar observaciones nuevas
+        continue-on-error: true
         run: python -m pulso.ingest
       # El job se queda 5,5 horas entregando cada ciclo que abra, en vez de rendirse si al despertar
       # no hay ninguno. GitHub llegó a estar 5 h sin disparar ninguna ejecución programada, así que
@@ -66,6 +76,12 @@ jobs:
         if: always() && vars.PIPELINE_ENABLED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          FALLO: ${{ job.status == 'failure' }}
         run: |
-          sleep 60
+          # La espera depende de como termino la sesion. Un fallo inmediato con un relevo de un
+          # minuto se realimenta: el 2026-10-04 el cambio de esquema de la API tumbo la ingesta y
+          # esto encadeno mas de 18 corridas en 20 minutos, cada una quemando minutos de Actions
+          # sin entregar nada. Con 10 minutos, un fallo persistente cuesta 6 corridas por hora en
+          # vez de 30, y sigue reintentando a tiempo para la ventana de 25 min de cada ciclo.
+          if [ "$FALLO" = "true" ]; then sleep 600; else sleep 60; fi
           gh workflow run collect-and-predict.yml --repo "${{ github.repository }}"

@@ -1333,6 +1333,59 @@ def test_sync_runs_once_just_before_building_the_prediction(world):
     assert result["status"] == "submitted" and calls == ["sync"]
 
 
+def test_a_broken_collector_does_not_cost_the_cycle(world):
+    """Si la sincronizacion previa falla, se entrega con la historia que ya hay.
+
+    Es la leccion del incidente del esquema 2. La llamada a `sync` estaba desnuda dentro del `try`
+    de la sesion, asi que un colector roto reventaba CADA ciclo y a los 5 seguidos mataba la
+    sesion. La API 0.9.0 cambio el esquema del stream y eso nos costo unas 18 horas virtuales de
+    cobertura por un problema que no tocaba al modelo.
+
+    Un target que falta cuenta como prediccion cero, asi que entregar con datos un poco viejos
+    siempre gana. Lo que no se vale es tragarse el fallo: queda en el resumen.
+    """
+    db, registry, server, api, now, _ = world
+
+    def colector_roto():
+        raise RuntimeError("demanda no numérica: None")
+
+    result = run_inference(api, db, registry, now=now, sync=colector_roto)
+    assert result["status"] == "submitted", "el ciclo se entrega igual"
+    assert result["n_predictions"] == len(server.cycle["targets"]), "sin perder ningun objetivo"
+    assert result["fallback_targets"] == 0, "y con el modelo, no por el respaldo"
+    assert "demanda no numérica" in result["sync_error"], "el fallo queda a la vista"
+
+
+def test_the_session_keeps_covering_with_a_broken_collector(world):
+    """Y el fallo del colector ya no gasta los reintentos de la sesion hasta matarla.
+
+    Antes bastaban 5 ciclos para que la sesion muriera y dejara de cubrir durante horas.
+    """
+    from pulso.predict import run_session
+
+    db, registry, server, api, now, wide = world
+    abiertos = []
+
+    def siguiente(n):
+        c = _cycle(wide, cycle_id=f"cyc_roto_{n}")
+        abiertos.append(c["cycle_id"])
+        return c
+
+    server.cycle = siguiente(1)
+    clock = FakeClock()
+
+    def dormir_y_rotar(seconds):
+        clock.sleep(seconds)
+        if len(clock.sleeps) in (2, 4):
+            server.cycle = siguiente(len(clock.sleeps))
+
+    salida = run_session(api, db, registry, duration_seconds=300, poll_seconds=60,
+                         sleep=dormir_y_rotar, clock=clock.now, now_fn=lambda: now,
+                         sync=lambda: (_ for _ in ()).throw(RuntimeError("esquema desconocido")))
+    assert salida["cycles_submitted"] == 3, "cubre los tres ciclos pese al colector roto"
+    assert "last_error" not in salida, "el colector roto no cuenta como error de sesion"
+
+
 @pytest.mark.parametrize("setup, reason", [
     (lambda server, db, registry, api, now: setattr(server, "cycle", None), "no_open_cycle"),
     (lambda server, db, registry, api, now: run_inference(api, db, registry, now=now),
