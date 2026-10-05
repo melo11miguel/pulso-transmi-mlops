@@ -304,3 +304,79 @@ def test_to_wide_builds_full_grid_and_keeps_station_text():
 def test_fold_dataclass_is_hashable():
     ts = pd.Timestamp("2026-09-01", tz=TZ)
     assert Fold("x", ts, ts, ts) in {Fold("x", ts, ts, ts)}
+
+
+# ------------------------------------------------- el instrumento de comparacion
+def test_cuts_never_overlap_their_evaluation_windows():
+    """Si las ventanas se tocan, las diferencias comparten datos y el error estandar miente."""
+    from pulso.evaluacion import cortes_de_entrenamiento
+
+    wide = synthetic_wide(days=24)
+    cortes = cortes_de_entrenamiento(wide.index, cortes=6, horas_eval=8, horas_salto=12)
+    assert len(cortes) == 6
+    assert cortes == sorted(cortes), "los cortes van en orden temporal"
+    for anterior, siguiente in zip(cortes, cortes[1:], strict=False):
+        fin_anterior = anterior + pd.Timedelta(hours=8)
+        assert fin_anterior <= siguiente, "la ventana de un corte entra en el siguiente"
+
+    with pytest.raises(ValueError, match="solaparian"):
+        cortes_de_entrenamiento(wide.index, horas_eval=12, horas_salto=8)
+
+
+def test_the_verdict_needs_significance_and_a_majority_not_just_a_mean():
+    """Las dos condiciones a la vez, que es la leccion del falso positivo del 2026-10-05."""
+    from pulso.evaluacion import Comparacion
+
+    def comp(difs):
+        n = len(difs)
+        return Comparacion(cortes=list(range(n)), diferencias=difs,
+                           acc_referencia=[50.0] * n, acc_candidato=[50.0 + d for d in difs])
+
+    # Media alta pero cargada por un solo corte: el intervalo toca el cero.
+    ruidosa = comp([+25.0, -1.0, -1.0, -1.0, -1.0, -1.0])
+    assert ruidosa.media > 3 and not ruidosa.veredicto()[0]
+    assert "ruido" in ruidosa.veredicto()[1]
+
+    # Consistente y pequeña: significativa, con mayoria, y supera el minimo.
+    consistente = comp([+1.1, +0.9, +1.2, +0.8, +1.0, +1.1])
+    assert consistente.significativa and consistente.gana == 6
+    assert consistente.veredicto()[0]
+
+    # Significativa pero por debajo del minimo de la puerta.
+    diminuta = comp([+0.11, +0.09, +0.12, +0.08, +0.10, +0.11])
+    assert diminuta.significativa and not diminuta.veredicto()[0]
+    assert "minimo" in diminuta.veredicto()[1]
+
+    # Pocos cortes: no se juzga.
+    assert not comp([+5.0, +5.0]).veredicto()[0]
+
+
+def test_the_standard_error_uses_cuts_not_targets():
+    """El corte es la unidad independiente; sus targets comparten modelo y ventana."""
+    from pulso.evaluacion import Comparacion
+
+    difs = [+2.0, -1.0, +3.0, 0.0]
+    c = Comparacion(cortes=list(range(4)), diferencias=difs,
+                    acc_referencia=[50.0] * 4, acc_candidato=[52.0, 49.0, 53.0, 50.0])
+    esperado = np.std(difs, ddof=1) / np.sqrt(4)
+    assert c.error_estandar == pytest.approx(esperado)
+    assert c.n == 4 and c.gana == 2
+def test_comparing_several_recipes_shares_the_same_cuts():
+    """Un barrido tiene que ser pareado: todas las recetas sobre los MISMOS cortes."""
+    from dataclasses import replace
+
+    from pulso.evaluacion import comparar_varias
+
+    wide = synthetic_wide(days=20)
+    recetas = {"base": FAST,
+               "sin residuales": replace(FAST, drop_features=("r0", "r1", "r2", "r3")),
+               "igual a base": FAST}
+    salida = comparar_varias(wide, recetas, "base", cortes=3, horas_eval=4, horas_salto=8)
+    assert set(salida) == {"sin residuales", "igual a base"}
+    assert all(c.n == 3 for c in salida.values())
+    assert salida["sin residuales"].cortes == salida["igual a base"].cortes
+    # La receta identica a la referencia no puede mostrar diferencia alguna.
+    assert all(d == 0.0 for d in salida["igual a base"].diferencias)
+
+    with pytest.raises(ValueError, match="no esta entre"):
+        comparar_varias(wide, recetas, "inexistente", cortes=3, horas_eval=4, horas_salto=8)

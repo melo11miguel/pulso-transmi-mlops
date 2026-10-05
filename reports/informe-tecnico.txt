@@ -210,6 +210,26 @@ eleccion de ventana (la misma puerta de 7 dias dio -0,23 y +0,31 en dos corridas
 separadas por UNA hora de reloj virtual). La segunda: si el mecanismo es real, hay
 que estimarlo de forma robusta, no con un rezago crudo.
 
+SEGUNDO INTENTO, con el estimador robusto y el instrumento nuevo (seccion 7b).
+En vez del residual crudo un periodo antes del objetivo, el PROMEDIO de una
+ventana centrada de 5 franjas alrededor de ese punto (o16 y o32, uno y dos
+periodos). Con ruido de desviacion 1,178 el suavizado recupera buena parte de la
+onda: contra la onda real, el rezago crudo correlaciona 0,539 y el suavizado
+0,760.
+
+Juzgado en 12 cortes independientes: +0,15 de media, intervalo del 95 %
+[-1,44, +1,73], gana 6/12. Indistinguible del ruido. Por horizonte la direccion
+es la que predice el mecanismo (+1,09 a +60 min ganando 7/12 y -1,01 a +15 min),
+pero ninguna alcanza significancia.
+
+Conclusion de los dos intentos: la onda EXISTE en los datos, esta medida y es
+grande en autocorrelacion, pero no logramos convertirla en señal utilizable. La
+diferencia con el primer descarte es que este si es confiable, porque al mismo
+instrumento se le midio la potencia en los mismos 12 cortes: quitar todas las
+variables de residual da +16,36 puntos ganando 12/12, intervalo
+[+9,04, +23,69]. Un instrumento que ve 16 puntos y no ve este efecto dice que el
+efecto no esta, no que no sepa mirar.
+
 
 7. TECHO DE PRECISION
 -------------------------------------------------------------------------------
@@ -224,6 +244,102 @@ Nota honesta: ese techo se midio sobre el historico de julio-septiembre. Un
 competidor alcanza 84,56 sobre los mismos targets donde nosotros sacamos 83,54,
 lo que indica que el margen restante NO es del techo sino nuestro. Queda
 pendiente re-medir el techo sobre el periodo de competencia.
+
+
+7b. COMO SE MIDE UNA MEJORA (el instrumento, src/pulso/evaluacion.py)
+-------------------------------------------------------------------------------
+Esta seccion existe por un error propio, y es la leccion de metodo mas util del
+proyecto. El 2026-10-05 medi unas variables nuevas en 3 bloques contiguos de 16
+ciclos: +2,38 ganando 3/3, con la ganancia creciendo monotonamente con el
+horizonte. Parecia la firma de un mecanismo. En 5 ventanas independientes el
+efecto se caia, y en la mas parecida a produccion hundia los horizontes largos
+19 puntos. La prueba mas clara de que el problema era el instrumento y no la
+variable: la MISMA puerta de 7 dias dio -0,23 y +0,31 en dos corridas separadas
+por UNA hora de reloj virtual.
+
+Tres defectos, y lo que los reemplaza:
+
+  1. BLOQUES CONTIGUOS. Comparten regimen, asi que ganar en los tres no dice
+     mas que ganar en uno. Ahora los cortes de entrenamiento se reparten a lo
+     largo de la historia y se separan lo suficiente (12 h) para que sus
+     ventanas de evaluacion (8 h) no se toquen. Lo fija un test.
+
+  2. UN NUMERO SIN DISPERSION. No se puede juzgar. Cada corte da una diferencia
+     pareada y de esas sale un error estandar, con el CORTE como unidad de
+     observacion. Los targets de un mismo corte comparten modelo y ventana, asi
+     que contarlos como independientes infla la muestra y da significancia
+     donde no hay: es exactamente como me engañe.
+
+  3. DISTANCIA AL CORTE. `make_folds` evalua con el modelo entrenado hasta 7
+     dias antes, y produccion refresca el champion cada pocas horas. Ahora esa
+     distancia es explicita y corta por defecto, para que la medicion se
+     parezca a lo que se despliega.
+
+El veredicto exige las DOS condiciones a la vez: ganar la mayoria de los cortes
+Y que el intervalo del 95 % de la media no toque el cero, ademas del minimo de
+0,2 puntos de la puerta. Una sola se cumple por azar con demasiada facilidad.
+
+La comparacion es PAREADA y gemelo contra gemelo: las dos recetas ven el mismo
+corte y la misma ventana, asi que la dificultad de la ventana se cancela en la
+diferencia, y la referencia se construye con `drop_features` sobre la receta
+candidata, nunca con un artefacto viejo del registro.
+
+Al instrumento se le mide la POTENCIA antes de creerle un descarte: se le pide
+detectar un efecto que ya sabemos grande (quitar todas las variables de
+residual). Un instrumento que no ve lo grande no sirve para descartar lo
+pequeño. Medido en los 12 cortes: quitar todas las variables de
+residual da +16,36 puntos ganando 12/12, intervalo [+9,04, +23,69].
+
+LO PRIMERO QUE SE HIZO CON EL INSTRUMENTO fue revalidar la receta que estaba en
+produccion, porque se habia adoptado con el viejo. No era un falso positivo, y
+el barrido de la ventana de historia confirma que los 7 dias estan en el punto:
+
+    anterior (semana, toda la historia)   -5,88   gana  1/12   significativo
+    semana, 21 dias                       -3,50   gana  2/12   significativo
+    dia, 3 dias                           +1,83   gana  7/12   ruido
+    dia, 14 dias                          -2,18   gana  0/12   significativo
+    dia, toda la historia                 -5,05   gana  1/12   significativo
+
+Dos lecturas. La receta vigente es la mejor del barrido, con la anterior 5,88
+puntos por debajo. Y la de 3 dias deja una pista que aparece por segunda vez:
++4,77 a +60 min y -1,16 a +15, el mismo patron por horizonte que tenian las
+variables de onda. Los horizontes largos quieren datos mas recientes y los cortos
+quieren muestra, y un modelo unico para los cuatro los obliga a un compromiso.
+
+Esa pista se probo con un hibrido por horizonte: tomar +15 y +30 del modelo de 7
+dias y +45 y +60 del de 3, combinando las predicciones reales y puntuando con la
+metrica oficial. Sobre los 12 cortes da +1,75 con intervalo [-0,47, +3,97], que
+contiene el cero, asi que por la regla pre-declarada se descarta. Pero la
+estructura importa y queda anotada para quien siga: los cortes anteriores al
+evento son pequeños y mezclados (-0,56, +0,06, -1,94, +1,62, -0,39), el corte DEL
+evento pierde -6,62, y los seis posteriores son todos positivos (+7,81, +6,29,
++3,77, +3,32, +3,24, +4,43). A +15 y +30 la diferencia es exactamente 0,00 por
+construccion, y la ganancia esta toda en +45 (+2,43, gana 8/12) y +60 (+4,77,
+gana 7/12).
+
+Dicho de otro modo: el hibrido parece ayudar en el regimen nuevo y ser neutro en
+el viejo, pero el intervalo sobre la ventana completa no permite afirmarlo.
+
+Se volvio a medir restringiendo los cortes al regimen nuevo, con la frontera del
+09-18 declarada ANTES de mirar resultados (es el evento del profesor, documentado
+desde septiembre, no una linea elegida a conveniencia), y con 11 cortes mas
+finos para que el regimen nuevo diera muestra:
+
+    hibrido (7 d cortos, 3 d largos)   +2,57   gana 8/11   [-0,32, +5,47]
+    3 dias en todos los horizontes     +3,90   gana 6/11   [-0,70, +8,49]
+
+Las dos se descartan: el intervalo contiene el cero en las dos. Y la razon de
+fondo esta en la columna de referencia de esa tabla, no en las variables: la
+accuracy de la receta vigente salta de 46 a 82 entre cortes ADYACENTES. El
+regimen nuevo es tan ruidoso que detectar un efecto de 2 a 4 puntos necesita mas
+dias de los que hay. Con mas dias la pregunta se puede cerrar; con los que habia,
+no, y afirmarlo seria repetir el error del primer intento.
+
+Queda anotado que, de los dos, el hibrido tiene mejor perfil de riesgo aunque su
+media sea menor: por construccion no puede tocar +15 ni +30 (la diferencia es
+exactamente 0,00), asi que su peor caso esta acotado, mientras que usar 3 dias en
+todo mueve los cuatro horizontes a la vez. Si alguien retoma esto con mas datos,
+ese es el candidato a probar primero.
 
 
 8. OPERACION: LA COBERTURA ES LA PALANCA
