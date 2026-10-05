@@ -183,6 +183,34 @@ El caso de la ponderacion por demanda merece mencion: la teoria la respalda
 en la hora pico y la varianza que introduce supera la ganancia de alineacion.
 
 
+REZAGOS ALINEADOS AL OBJETIVO (2026-10-05): el caso mas instructivo de todos.
+
+Rezagos del residual alineados al objetivo (4 h, 8 h y 24 h antes del instante
+que se predice, en vez de al origen), para montarse en la oscilacion de 4 h que
+el perfil no puede representar. La idea tiene mecanismo y el diagnostico que la
+motiva es solido (seccion 15), pero no replica.
+
+En 3 bloques de 16 ciclos posteriores al evento, con el camino de produccion, daba
++2,38 ganando 3/3, y la ganancia crecia monotonamente con el horizonte: +1,36 a
++15 min, +1,20 a +30, +2,43 a +45 y +4,54 a +60. Esa monotonia parecia la firma
+del mecanismo.
+
+En 5 ventanas de holdout independientes (1, 2, 3, 5 y 7 dias) se cae: los
+horizontes largos ganan 2/5 con media -3,82 a +45 y -2,26 a +60, y en la ventana
+de 1 dia, la mas parecida a produccion, se desploman -19,85 y -14,26. No es ruido
+simetrico: el modelo se apoya en un rezago PUNTUAL y cuando ese rezago no
+representa la onda, revienta en los horizontes que pretendia arreglar. El residual
+tiene desviacion 1,178 en log despues del evento, asi que un valor suelto es un
+estimador malisimo de la fase de la onda.
+
+Dos lecciones que valen mas que el experimento. La primera: un patron limpio en
+3 bloques contiguos no es evidencia suficiente, porque comparten regimen; las
+ventanas independientes mostraron que el efecto total cabe dentro del ruido de la
+eleccion de ventana (la misma puerta de 7 dias dio -0,23 y +0,31 en dos corridas
+separadas por UNA hora de reloj virtual). La segunda: si el mecanismo es real, hay
+que estimarlo de forma robusta, no con un rezago crudo.
+
+
 7. TECHO DE PRECISION
 -------------------------------------------------------------------------------
 La demanda se genera con una binomial negativa: hay ruido irreducible.
@@ -454,8 +482,17 @@ Interruptor general: la variable de repositorio PIPELINE_ENABLED. Si no esta en
 15. PENDIENTE
 -------------------------------------------------------------------------------
 - Re-medir el techo de ruido sobre el periodo de competencia (seccion 7).
-- Investigar el horizonte corto: +15 min solo supera a +60 min por 1,76 puntos,
-  poca diferencia para una serie que se observa cada 15 minutos.
+- RESUELTO, y al reves de como estaba anotado. Esa brecha de 1,76 puntos entre
+  +15 y +60 era de antes de los eventos inyectados. Medida el 2026-10-05 sobre lo
+  entregado, la brecha es de 22,8 puntos: 75,56 a +15 min y 52,77 a +60. Por
+  estacion el error es parejo (las tres peores cuestan 0,41 puntos), asi que todo
+  el daño esta en el horizonte largo, donde manda el perfil y no la persistencia.
+  Causa, medida en la autocorrelacion del residual: cae a 0,220 a las 2 h y VUELVE
+  a 0,444 a las 4 h y 0,473 a las 8 h, con valle en -0,061 a las 6 h. Es una
+  oscilacion de unas 4 h que el perfil no puede representar porque no esta amarrada
+  a la hora del dia, y que nuestras variables borraban: m16 es la media de 4 h, o
+  sea el promedio de un periodo completo, justo la operacion que anula esa onda.
+  El diagnostico queda firme; el primer intento de aprovecharlo fallo (seccion 6).
 - Las estaciones pequenas arrastran el promedio sin ponderar (seccion 1b).
 - Rotar la API key y la clave de servicio de Supabase al cerrar el proyecto.
 - Re-entrenar en cuanto la ingesta este al dia: el champion quedo con datos hasta
