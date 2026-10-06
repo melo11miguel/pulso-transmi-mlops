@@ -78,6 +78,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FALLO: ${{ job.status == 'failure' }}
         run: |
+          # Entre rondas no hay nada que relevar. `pulso.predict` deja este archivo cuando el
+          # reloj responde `state: waiting`, es decir cuando una ronda termino y aun no empieza
+          # otra. Encadenar ahi cuesta 330 minutos de ejecutor por sesion para sondear ciclos que
+          # no van a abrir; el cron de cada 10 minutos sigue vigilando por poco mas de un minuto
+          # por sondeo y reanuda solo en cuanto arranque la ronda siguiente.
+          if [ -f sin_ronda ]; then
+            echo "La API esta entre rondas: no se encadena. El cron sigue vigilando." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # La espera depende de como termino la sesion. Un fallo inmediato con un relevo de un
           # minuto se realimenta: el 2026-10-04 el cambio de esquema de la API tumbo la ingesta y
           # esto encadeno mas de 18 corridas en 20 minutos, cada una quemando minutos de Actions

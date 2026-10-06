@@ -1333,6 +1333,43 @@ def test_sync_runs_once_just_before_building_the_prediction(world):
     assert result["status"] == "submitted" and calls == ["sync"]
 
 
+def test_between_rounds_the_session_does_not_burn_runner_minutes(world):
+    """Si la API esta entre rondas no va a abrir ningun ciclo, asi que la sesion no debe arrancar.
+
+    `/v1/clock` responde {"state": "waiting"} sin `code` ni `virtual_now` cuando una ronda termino
+    y aun no empieza otra. Una sesion de 5,5 h ahi cuesta 330 minutos de ejecutor para sondear en
+    vano, y el relevo la encadena para siempre. El cron de cada 10 minutos sigue vigilando por
+    poco mas de un minuto por sondeo.
+    """
+    from pulso.predict import ronda_en_espera
+
+    _, _, server, api, _, _ = world
+    server.clock_state, server.clock_code = "waiting", None
+    assert ronda_en_espera(api) is None, "entre rondas no hay ronda"
+
+    server.clock_state, server.clock_code = "running", "official-20260921"
+    assert ronda_en_espera(api) == "official-20260921"
+
+    # Un estado corriendo pero sin codigo tampoco es una ronda utilizable.
+    server.clock_code = None
+    assert ronda_en_espera(api) is None
+
+
+def test_an_unreadable_clock_is_not_mistaken_for_the_end_of_a_round(world):
+    """Ante la duda se trabaja: dejar de cubrir por un timeout seria mucho peor que gastar minutos.
+
+    El 2026-10-06 la API del profesor estuvo 6 minutos inalcanzable y los reintentos la cubrieron.
+    Si un fallo de red se leyera como «no hay ronda», un corte asi nos apagaria la cobertura.
+    """
+    from pulso.predict import ronda_en_espera
+
+    _, _, server, api, _, _ = world
+    # Un 503 suelto NO deja el reloj ilegible: `http.send` lo reintenta y la llamada termina bien.
+    # Para agotar los reintentos hacen falta mas respuestas de error que intentos.
+    server.fail_with = [httpx.Response(503, json={"detail": {"code": "oops", "message": "no"}})] * 6
+    assert ronda_en_espera(api) == "desconocida", "un reloj ilegible no apaga la sesion"
+
+
 def test_a_broken_collector_does_not_cost_the_cycle(world):
     """Si la sincronizacion previa falla, se entrega con la historia que ya hay.
 

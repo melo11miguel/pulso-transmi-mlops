@@ -422,6 +422,36 @@ pipeline entro en operacion cuando la competencia ya llevaba ciclos corridos, y
 los targets de esos ciclos cuentan como cero para siempre.
 
 
+CIERRE DE LA RONDA (official-20260921). El reloj de la API paso a
+`state: "waiting"` el 2026-10-06, sin `code` ni `virtual_now`: la ronda termino.
+Numeros finales:
+
+    Ciclos entregados:             255 de 257 vistos
+    Acumulada:       puesto 14 de 32, accuracy 64,29, cobertura 0,916
+    Ventana 24 h:    puesto 23 de 32, accuracy 30,81, cobertura 0,458
+    Accuracy real (sobre lo entregado):  ~65 %
+    Lideres (acumulada):  81,40 / 81,36 / 79,86, todos con cobertura ~1,00
+
+Las dos lecturas honestas de ese cierre:
+
+  1. Los 8,4 puntos de cobertura que faltan son el incidente del esquema de la
+     API (seccion 11b): 17 ciclos sin entregar en una tarde. Con cobertura 1,00
+     el acumulado habria quedado cerca de 70 y unos seis puestos mas arriba. El
+     incidente, no el modelo, es lo que decidio la posicion final.
+
+  2. Aun asi, 70 sigue once puntos por debajo del lider. Eso es modelo, y esta
+     diagnosticado sin resolver: el daño se concentra en los horizontes largos
+     (75,56 a +15 min contra 52,77 a +60) por una oscilacion de ~4 h que el
+     perfil no puede representar. Tres intentos de aprovecharla se descartaron
+     con evidencia (seccion 6), y el instrumento (seccion 7b) mostro por que no
+     se puede cerrar con los datos que hubo: la accuracy salta de 46 a 82 entre
+     cortes ADYACENTES.
+
+La ventana de 24 h quedo en 0,458 porque el tiempo virtual se detuvo con el hueco
+del incidente todavia dentro de la ventana. No es un dato sobre el modelo: es el
+hueco congelado por el reloj.
+
+
 11. INCIDENTE DEL 2026-09-24 (postmortem)
 -------------------------------------------------------------------------------
 Se documenta porque es la leccion mas util del proyecto.
@@ -611,6 +641,14 @@ Interruptor general: la variable de repositorio PIPELINE_ENABLED. Si no esta en
   El diagnostico queda firme; el primer intento de aprovecharlo fallo (seccion 6).
 - Las estaciones pequenas arrastran el promedio sin ponderar (seccion 1b).
 - Rotar la API key y la clave de servicio de Supabase al cerrar el proyecto.
+- Si arranca una ronda nueva: `observations` tiene clave primaria
+  (station_id, observed_at) y NADA que identifique la ronda, asi que una ronda
+  que reuse fechas virtuales sobrescribiria el historico de la anterior sin dar
+  error. Hoy hay un guard que para la ingesta en seco cuando el codigo de ronda
+  cambia (`revisar_ronda`), pero el arreglo de fondo es una columna de ronda
+  dentro de la clave primaria y un filtro en `load_wide`. No se hizo todavia a
+  proposito: no vale cambiar la clave de una tabla viva por una ronda que aun no
+  existe, y el guard convierte la corrupcion silenciosa en una parada visible.
 - Re-entrenar en cuanto la ingesta este al dia: el champion quedo con datos hasta
   2026-09-20T12:00Z mientras el reloj virtual llegaba a 09-21T07:00Z, 19 horas
   virtuales de rancidez por el incidente del 11b.

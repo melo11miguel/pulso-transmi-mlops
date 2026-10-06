@@ -19,8 +19,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+import httpx
 import numpy as np
 import pandas as pd
 
@@ -558,6 +560,31 @@ def run_session(api: PulsoApi, db: Supabase, registry: ModelRegistry, *,
     return summary
 
 
+ARCHIVO_SIN_RONDA = "sin_ronda"
+
+
+def ronda_en_espera(api: PulsoApi) -> str | None:
+    """Codigo de la ronda si hay competencia corriendo; None si la API esta entre rondas.
+
+    `/v1/clock` responde `{"state": "waiting", "server_time": ...}` cuando una ronda termino y aun
+    no empieza otra: sin `code` y sin `virtual_now`. En ese estado no va a abrir ningun ciclo, asi
+    que una sesion de 5,5 h solo gasta minutos de Actions sondeando en vano, y el relevo la
+    encadena para siempre. Se mide en lo que cuesta: 330 minutos de ejecutor por sesion frente a
+    poco mas de uno por sondeo del cron, que corre cada 10 minutos de todas formas.
+
+    Un fallo al leer el reloj NO se interpreta como ausencia de ronda: ante la duda se trabaja,
+    porque dejar de cubrir por un timeout seria mucho peor que gastar unos minutos de mas.
+    """
+    try:
+        reloj = api.clock()
+    except (PulsoApiError, httpx.HTTPError) as exc:
+        log.warning("No se pudo leer el reloj (%s); se asume que hay ronda y se sigue", exc)
+        return "desconocida"
+    if reloj.get("state") == "waiting" or not reloj.get("code"):
+        return None
+    return str(reloj["code"])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Predice el ciclo abierto y envía la entrega")
     parser.add_argument("--dry-run", action="store_true", help="construye y valida sin enviar")
@@ -579,6 +606,13 @@ def main(argv: list[str] | None = None) -> int:
             # minutos de espera y la API libera datos nuevos cada 30 min.
             sync = lambda: run_collector(api, store)  # noqa: E731
             registry_ = ModelRegistry(db)
+            if args.run_for > 0 and ronda_en_espera(api) is None:
+                # El workflow lee este archivo para no encadenar la sesion siguiente.
+                Path(ARCHIVO_SIN_RONDA).write_text("waiting\n")
+                log.info("La API esta entre rondas: no hay ciclos que cubrir, se termina ya")
+                run.summary.update({"status": "skipped", "reason": "sin_ronda"})
+                run.skip("sin_ronda")
+                return 0
             if args.run_for > 0:
                 result = run_session(api, db, registry_, duration_seconds=args.run_for * 60,
                                      dry_run=args.dry_run, sync=sync)

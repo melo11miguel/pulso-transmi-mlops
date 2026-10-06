@@ -122,3 +122,47 @@ def test_api_error_never_leaks_key(api, server, store):
         run_collector(api, store)
     assert "SECRETKEY" not in str(info.value)
     assert "SECRETKEY" not in str(store.runs[1]["error"])
+
+
+# ------------------------------------------------- cambio de ronda
+def test_a_round_change_stops_the_collector_before_it_overwrites_history(api, server, store):
+    """`observations` no distingue rondas, asi que una ronda nueva corromperia la vieja en silencio.
+
+    La clave primaria es (station_id, observed_at). Si el reto abre otra ronda que reusa fechas
+    virtuales, cosa probable porque el historico de arranque siempre termina el 2026-09-08, el
+    upsert escribiria encima sin dar error y el modelo entrenaria sobre una serie pegada de dos
+    procesos generadores distintos: un numero plausible y mal, la peor clase de fallo.
+
+    El guard no lo arregla, lo hace visible antes de escribir.
+    """
+    from pulso.ingest import RONDA_RESOURCE
+
+    server.rows = make_rows(4)
+    server.clock_code = "official-20260921"
+
+    primera = run_collector(api, store)
+    assert primera.ronda == "official-20260921"
+    assert store.get_cursor(RONDA_RESOURCE) == "official-20260921"
+    assert primera.inserted == 4
+
+    # Misma ronda: sigue sin quejarse.
+    assert run_collector(api, store).ronda == "official-20260921"
+
+    # Ronda distinta: para en seco y lo dice.
+    server.clock_code = "official-20261101"
+    antes = dict(store.observations)
+    with pytest.raises(CollectorError, match="La ronda cambio"):
+        run_collector(api, store)
+    assert store.observations == antes, "no debe escribir nada tras detectar el cambio"
+
+
+def test_a_clock_without_a_round_code_does_not_trigger_the_guard(api, server, store):
+    """Entre rondas y con el reloj ilegible no pasa nada: el guard solo mira codigos distintos."""
+    from pulso.ingest import RONDA_RESOURCE
+
+    server.rows = make_rows(4)
+    server.clock_code = None          # como responde la API entre rondas
+    r = run_collector(api, store)
+    assert r.ronda is None
+    assert store.get_cursor(RONDA_RESOURCE) is None
+    assert r.inserted == 4, "sin codigo de ronda la ingesta sigue trabajando igual"

@@ -37,6 +37,7 @@ class FakeServer:
         self.rows = rows or []
         self.calls: list[httpx.Request] = []
         self.clock_state = "waiting"
+        self.clock_code: str | None = None   # codigo de la ronda; None imita el estado entre rondas
         self.cycle: dict | None = None
         self.fail_with: list[httpx.Response] = []  # respuestas a servir antes de las normales
         self.reject_cursors = False
@@ -51,7 +52,10 @@ class FakeServer:
         if path == "/v1/stream/observations":
             return self._stream(request)
         if path == "/v1/clock":
-            return httpx.Response(200, json={"state": self.clock_state})
+            reloj: dict = {"state": self.clock_state}
+            if self.clock_code is not None:
+                reloj["code"] = self.clock_code
+            return httpx.Response(200, json=reloj)
         if path == "/v1/forecast-cycles/current":
             if self.cycle is None:
                 return httpx.Response(404, json={"detail": {"code": "no_open_cycle",

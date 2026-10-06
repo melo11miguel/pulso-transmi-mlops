@@ -29,6 +29,7 @@ from .supa import Supabase
 log = logging.getLogger("pulso.ingest")
 
 STREAM_RESOURCE = "stream_observations"
+RONDA_RESOURCE = "ronda_vista"   # guarda el codigo de la ronda en la misma tabla del cursor
 
 
 class CollectorError(RuntimeError):
@@ -49,13 +50,53 @@ class CollectorResult:
     # Filas del esquema 2 sin valor usable (`quality` distinto de "observed"). Se omiten en vez de
     # guardarse como cero, y se cuentan aqui para que no desaparezcan sin dejar rastro.
     omitidas: int = 0
+    ronda: str | None = None
 
 
-def _clock_state(api: PulsoApi) -> str | None:
+def _reloj(api: PulsoApi) -> dict:
+    """El reloj, una sola vez por ejecucion. Un fallo no debe tumbar la ingesta.
+
+    Se lee una vez y de ahi salen el estado y el codigo de ronda. Pedirlo dos veces no solo
+    gastaba una peticion: cambiaba cuantas respuestas consume el colector, que es justo lo que
+    detecto la prueba de que un 401 no filtra la API key.
+    """
     try:
-        return api.clock().get("state")
-    except (PulsoApiError, httpx.HTTPError):  # informativo: no debe tumbar la ingesta
+        return api.clock()
+    except (PulsoApiError, httpx.HTTPError):
+        return {}
+
+
+def revisar_ronda(reloj: dict, store: Store) -> str | None:
+    """Comprueba que la ronda sea la misma de siempre, y para en seco si cambio.
+
+    `observations` tiene clave primaria `(station_id, observed_at)` y nada que identifique la
+    ronda. Si el reto abre una ronda nueva que reusa fechas virtuales, cosa probable porque el
+    historico de arranque siempre termina el 2026-09-08, el upsert escribiria los datos nuevos
+    ENCIMA de los viejos sin error ninguno, y el modelo entrenaria sobre una serie pegada de dos
+    procesos generadores distintos. Un numero plausible y mal, que es la peor clase de fallo.
+
+    Esto no lo arregla, lo hace visible: para antes de escribir y dice que decidir. Arreglarlo de
+    verdad pide una columna de ronda en la clave primaria, y no vale cambiar la clave de una tabla
+    viva por una ronda que todavia no existe; cuando exista, este error es el que la pide.
+
+    Un reloj ilegible o entre rondas no dispara nada: solo un codigo distinto del guardado.
+    """
+    actual = reloj.get("code")
+    if actual is None:
         return None
+    visto = store.get_cursor(RONDA_RESOURCE)
+    if visto is None:
+        store.ingest([], RONDA_RESOURCE, actual)   # primera vez: se registra sin avisar
+        log.info("Ronda registrada: %s", actual)
+        return actual
+    if visto != actual:
+        raise CollectorError(
+            f"La ronda cambio de {visto!r} a {actual!r} y `observations` no distingue rondas: "
+            f"ingerir ahora sobrescribiria el historico de la ronda anterior donde las fechas "
+            f"virtuales coincidan. Hay que decidir primero (columna de ronda en la clave "
+            f"primaria, o archivar la serie vieja) y recien despues reanudar la ingesta."
+        )
+    return actual
 
 
 def run_collector(api: PulsoApi, store: Store, *, page_size: int = 1000, max_pages: int = 500,
@@ -64,7 +105,9 @@ def run_collector(api: PulsoApi, store: Store, *, page_size: int = 1000, max_pag
     result = CollectorResult(cursor_before=committed, cursor_after=committed)
     run_id = store.start_run("stream", committed)
     try:
-        result.clock_state = _clock_state(api)
+        reloj = _reloj(api)
+        result.clock_state = reloj.get("state")
+        result.ronda = revisar_ronda(reloj, store)
         known = store.known_stations()
         cursor = committed
         seen: set[str] = {cursor} if cursor else set()
