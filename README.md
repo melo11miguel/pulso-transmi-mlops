@@ -128,9 +128,50 @@ Los datos iniciales (`data/*.csv`) no se versionan: se descargan de la API
 
 - El `context` no se usa; si la API lo libera durante la competencia sería la mejora principal.
 - Los drifts de estrés son propios y simples; los umbrales deben revisarse con los primeros ciclos reales.
-- Dashboard en Vercel, MLflow y el monitoreo de data drift más allá del nivel: bonos, no implementados.
+- Bonos: el dashboard en Vercel está hecho (https://pulso-transmi-dashboard.vercel.app,
+  sección 13 del informe) y el monitoreo de data drift también (`src/pulso/monitor.py`,
+  `reports/drift_stress.md`). MLflow está como EXPORTACIÓN, no como registro primario: ver abajo.
 - El comportamiento del cursor del stream (`next_cursor`) con datos reales no se pudo comprobar
   (el reloj sigue en `waiting`); el collector relee la última página y tolera un cursor rechazado.
+
+## MLflow (bono)
+
+El registro de verdad del pipeline es la tabla `model_versions` en Supabase: ahí se decide la
+promoción, de ahí lee el predictor y ahí está la trazabilidad, con verificación de sha256 del
+artefacto, linaje por `parent_version` y un índice único que garantiza un solo champion a la vez.
+
+`scripts/mlflow_export.py` **exporta** ese registro a MLflow para tener su interfaz sobre datos
+reales del proyecto. No instrumenta el entrenamiento y no inventa ninguna corrida: lee las
+versiones ya registradas y las escribe con sus params, métricas y linaje. Conviene decirlo así
+cuando se presente, porque es lo que es.
+
+Se eligió exportar en vez de instrumentar por una razón operativa: el pipeline corre en
+ejecutores efímeros de GitHub Actions, y poner MLflow como registro primario pedía exponer la
+cadena de conexión de Postgres a Actions y duplicar la fuente de verdad, con el riesgo de que las
+dos se desincronicen.
+
+MLflow vive en su propio entorno porque `requirements.txt` fija versiones exactas (un artefacto de
+scikit-learn solo carga con la versión con que se entrenó) y MLflow arrastra las suyas:
+
+```bash
+# Entorno aparte, una sola vez. cryptography 43 porque las versiones nuevas no traen wheel
+# para macOS x86_64 y caerían a compilar con Rust.
+python3.12 -m venv .venv-mlflow
+.venv-mlflow/bin/python -m pip install "cryptography==43.0.3" mlflow
+
+# Exportar e inspeccionar (SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el entorno)
+.venv-mlflow/bin/python scripts/mlflow_export.py
+.venv-mlflow/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5055
+```
+
+El respaldo es sqlite y no archivos porque el Model Registry de MLflow no funciona sobre el
+almacén de archivos. Volver a correr el script es idempotente: omite las corridas ya exportadas.
+
+Lo que queda en la interfaz: experimento `pulso-transmi` con una corrida por versión entrenada
+(321 al cierre de la ronda: 1 champion, 243 archivadas, 77 rechazadas), cada una con sus params,
+sus métricas de validación incluidas las de por horizonte y por estación, y etiquetas con el
+commit, la decisión de la puerta y su motivo; más el modelo `pulso-transmi-demanda` registrado,
+con alias `champion` y el artefacto del champion adjunto.
 
 ## Licencia
 

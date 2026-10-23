@@ -586,6 +586,47 @@ al paso que entrega.
   contenido sigue en el historial de git y NO se consulto.
 
 
+12b. MLFLOW (BONO)
+-------------------------------------------------------------------------------
+El registro de verdad del pipeline NO es MLflow: es la tabla `model_versions` en
+Supabase. Ahi se decide la promocion, de ahi lee el predictor, y guarda version,
+params, features, metricas de validacion, artefacto con su sha256 verificado al
+cargar, linaje por `parent_version` y un indice unico que garantiza un solo
+champion a la vez.
+
+`scripts/mlflow_export.py` EXPORTA ese registro a MLflow. No instrumenta el
+entrenamiento y no inventa ninguna corrida: lee las versiones ya registradas y
+las escribe con sus params, metricas y linaje. Vale decirlo asi al presentarlo,
+porque es lo que es.
+
+Por que exportar y no instrumentar, que es la decision de diseño: el pipeline
+corre en ejecutores efimeros de GitHub Actions, y poner MLflow como registro
+primario pedia exponer la cadena de conexion de Postgres a Actions y duplicar la
+fuente de verdad, con el riesgo de que las dos se desincronicen. El registro que
+ya existe cubre lo que MLflow daria y agrega dos cosas que MLflow no trae por
+defecto: la verificacion de hash del artefacto antes de deserializarlo y la
+garantia de un solo champion a nivel de base de datos.
+
+Detalles de montaje que costaron tiempo y conviene dejar escritos:
+
+  - MLflow vive en su propio entorno (.venv-mlflow). `requirements.txt` fija
+    versiones exactas porque un artefacto de scikit-learn solo carga con la
+    version con que se entreno, y MLflow arrastra las suyas.
+  - `cryptography` se fija en 43.0.3: las versiones nuevas no traen wheel para
+    macOS x86_64 y caen a compilar con Rust.
+  - El respaldo es sqlite y no archivos porque el Model Registry de MLflow no
+    funciona sobre el almacen de archivos.
+  - El script lee Supabase con la libreria estandar, sin importar `pulso`, para
+    no arrastrar los pines del pipeline a ese entorno.
+  - Re-ejecutarlo es idempotente: omite las corridas ya exportadas.
+
+Lo que queda en la interfaz, al cierre de la ronda: experimento `pulso-transmi`
+con 321 corridas (1 champion, 243 archivadas, 77 rechazadas), cada una con 16
+params, 19 etiquetas y 22 metricas, incluidas las de por horizonte y por
+estacion; y el modelo `pulso-transmi-demanda` registrado con alias `champion` y
+el artefacto del champion adjunto.
+
+
 13. DASHBOARD (BONO)
 -------------------------------------------------------------------------------
 https://pulso-transmi-dashboard.vercel.app

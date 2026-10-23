@@ -1,5 +1,6 @@
 # Entornos y caches
 .venv/
+.venv-mlflow/
 __pycache__/
 *.egg-info/
 .pytest_cache/
@@ -16,5 +17,10 @@ data/
 artifacts/
 *.joblib
 *.dmg
+
+# MLflow: el almacen local lo reconstruye scripts/mlflow_export.py desde Supabase
+mlflow.db
+mlruns/
+mlartifacts/
 
 .DS_Store
