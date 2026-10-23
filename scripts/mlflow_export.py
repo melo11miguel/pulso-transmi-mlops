@@ -20,9 +20,13 @@ artefacto de scikit-learn solo carga con la version con que se entreno. MLflow a
 propias versiones, asi que vive en su propio entorno (.venv-mlflow) y este script lee Supabase
 con la libreria estandar en vez de importar `pulso`.
 
+PUERTO. Se usa 5055 y NO el 5000 por defecto de MLflow: en macOS el 5000 lo ocupa el receptor de
+AirPlay del Centro de Control, que responde 403, asi que el navegador parece mostrar una interfaz
+vacia cuando en realidad no esta hablando con MLflow.
+
 Uso:
     .venv-mlflow/bin/python scripts/mlflow_export.py
-    .venv-mlflow/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db
+    .venv-mlflow/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5055
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from mlflow.tracking import MlflowClient
 EXPERIMENTO = "pulso-transmi"
 MODELO = "pulso-transmi-demanda"
 BUCKET = "models"
+PUERTO = 5055
 PAGINA = 1000
 
 
@@ -185,7 +190,11 @@ def main() -> int:
         print("Sin champion en el registro: no se registra modelo")
         return 0
 
-    datos = artefacto(base, key, champion["artifact_path"]) if champion.get("artifact_path") else None
+    ya_subido = any(a.path == "model" for a in cliente.list_artifacts(champion_run))
+    datos = (None if ya_subido or not champion.get("artifact_path")
+             else artefacto(base, key, champion["artifact_path"]))
+    if ya_subido:
+        print("El artefacto del champion ya estaba subido")
     if datos:
         local = "model.joblib"
         with open(local, "wb") as f:
@@ -201,15 +210,26 @@ def main() -> int:
                                 "con perdida L1 sobre el residual logaritmico.")
     except Exception:
         pass  # ya existia
-    mv = cliente.create_model_version(
-        MODELO, source=f"runs:/{champion_run}/model", run_id=champion_run,
-        description=f"Champion del pipeline. accuracy de validacion "
-                    f"{(champion.get('validation') or {}).get('accuracy')}, "
-                    f"datos hasta {champion.get('training_data_end')}.")
-    cliente.set_registered_model_alias(MODELO, "champion", mv.version)
-    print(f"Modelo {MODELO!r} version {mv.version} con alias 'champion' -> {champion['version']}")
-    print("\nAbra la interfaz con:\n"
-          "  .venv-mlflow/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db")
+    # Idempotente tambien aqui: sin esta busqueda, cada ejecucion creaba una version nueva del
+    # modelo apuntando al MISMO champion, y el registro se llenaba de duplicados.
+    existente = next((v for v in cliente.search_model_versions(f"name = '{MODELO}'")
+                      if v.run_id == champion_run), None)
+    if existente is not None:
+        version = existente.version
+        print(f"La version {version} ya apuntaba a esta corrida: no se duplica")
+    else:
+        version = cliente.create_model_version(
+            MODELO, source=f"runs:/{champion_run}/model", run_id=champion_run,
+            description=f"Champion del pipeline. accuracy de validacion "
+                        f"{(champion.get('validation') or {}).get('accuracy')}, "
+                        f"datos hasta {champion.get('training_data_end')}.").version
+    cliente.set_registered_model_alias(MODELO, "champion", version)
+    print(f"Modelo {MODELO!r} version {version} con alias 'champion' -> {champion['version']}")
+    print(f"\n{len(filas)} versiones en el experimento {EXPERIMENTO!r}. Abra la interfaz con:\n"
+          f"  .venv-mlflow/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db --port {PUERTO}\n"
+          f"y luego http://127.0.0.1:{PUERTO}\n"
+          f"El puerto va explicito: en macOS el 5000 por defecto lo ocupa AirPlay y responde 403, "
+          f"asi que la interfaz se ve vacia sin que el error sea evidente.")
     return 0
 
 

@@ -162,7 +162,13 @@ python3.12 -m venv .venv-mlflow
 # Exportar e inspeccionar (SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el entorno)
 .venv-mlflow/bin/python scripts/mlflow_export.py
 .venv-mlflow/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5055
+# y abrir http://127.0.0.1:5055
 ```
+
+El puerto va explícito a propósito: en macOS el 5000 por defecto de MLflow lo ocupa el receptor de
+AirPlay del Centro de Control, que responde 403, así que la interfaz se ve vacía sin que el error
+sea evidente. Si hace falta liberar el 5000, se apaga en Ajustes del sistema, General,
+AirDrop y Handoff, Receptor de AirPlay.
 
 El respaldo es sqlite y no archivos porque el Model Registry de MLflow no funciona sobre el
 almacén de archivos. Volver a correr el script es idempotente: omite las corridas ya exportadas.
